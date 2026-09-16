@@ -1,0 +1,42 @@
+name = "hawktalk-agent"
+main = "src/index.ts"
+compatibility_date = "2026-08-15"
+workers_dev = false
+preview_urls = false
+send_metrics = false
+
+[dev]
+ip = "127.0.0.1"
+port = 8787
+local_protocol = "http"
+
+[observability]
+enabled = false
+
+[env.dev]
+name = "hawktalk-agent-dev"
+
+[env.dev.vars]
+APP_ENV = "development"
+
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "hawktalk-local"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+remote = false
+
+# Remote bindings are deliberately absent until human provisioning.
+[env.staging]
+name = "hawktalk-agent-staging"
+d1_databases = []
+
+[env.staging.vars]
+APP_ENV = "staging"
+
+[env.production]
+name = "hawktalk-agent-production"
+d1_databases = []
+
+[env.production.vars]
+APP_ENV = "production"
