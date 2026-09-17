@@ -38,14 +38,21 @@ export type ProviderErrorCode = 'unavailable' | 'timeout' | 'upstream' | 'malfor
  * Thrown by ModelProvider implementations. `detail` is for the provider's own
  * internal use and is NEVER propagated into AgentError or any response —
  * the engine maps the code to a generic AgentError.
+ *
+ * `httpStatus` is an optional machine-readable classification for upstream
+ * HTTP failures (e.g. 429 vs 401 vs 5xx) so routers can apply cooldown /
+ * failover policy. It is undefined for network, timeout, and malformed
+ * failures. The engine ignores it; only routing policy reads it.
  */
 export class ProviderError extends Error {
   readonly code: ProviderErrorCode;
+  readonly httpStatus?: number | undefined;
 
-  constructor(code: ProviderErrorCode) {
+  constructor(code: ProviderErrorCode, httpStatus?: number | undefined) {
     super(`Provider error: ${code}`);
     this.name = 'ProviderError';
     this.code = code;
+    if (httpStatus !== undefined) this.httpStatus = httpStatus;
   }
 }
 

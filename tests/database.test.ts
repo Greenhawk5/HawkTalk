@@ -6,13 +6,24 @@ it('applies the foundation migration exactly once', async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   const rows = await env.DB.prepare('SELECT name FROM d1_migrations').all<{ name: string }>();
-  expect(rows.results).toEqual([{ name: '0001_foundation.sql' }, { name: '0002_telegram.sql' }]);
+  expect(rows.results).toEqual([{ name: '0001_foundation.sql' }, { name: '0002_telegram.sql' }, { name: '0003_ai_providers.sql' }]);
 });
 
 it('creates no tables beyond the Phase 2 transport set', async () => {
   const rows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
   expect(rows.results.map(({ name }) => name).filter((name) => !name.startsWith('sqlite_') && !name.startsWith('_cf_')).sort())
-    .toEqual(['d1_migrations', 'processed_updates', 'users']);
+    .toEqual(['d1_migrations', 'processed_updates', 'provider_credentials', 'providers', 'users']);
+});
+
+it('keeps provider configuration free of secret columns', async () => {
+  const columns = await env.DB.prepare('PRAGMA table_info(providers)').all<{ name: string }>();
+  const names = columns.results.map(({ name }) => name);
+  expect(names).toContain('base_url');
+  expect(names.filter((name) => /secret|api[_-]?key|token|password/i.test(name))).toEqual([]);
+  const credentialColumns = await env.DB.prepare('PRAGMA table_info(provider_credentials)').all<{ name: string }>();
+  const credentialNames = credentialColumns.results.map(({ name }) => name);
+  expect(credentialNames).toContain('secret_ciphertext');
+  expect(credentialNames.filter((name) => name !== 'secret_ciphertext' && /secret|api[_-]?key|token|password/i.test(name))).toEqual([]);
 });
 
 it('enforces users uniqueness on the Telegram user ID', async () => {
