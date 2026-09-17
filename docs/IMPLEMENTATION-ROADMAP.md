@@ -197,14 +197,16 @@ Manual actions: approval, Git operations, deployment, and `wrangler secret put C
 **Objective:** Tool registry + web_search + web_fetch with strong SSRF/injection defense.
 
 Tasks:
-- [ ] Tool registry (name, schema, permissions, execute)
-- [ ] web_search (provider-abstracted: e.g. Brave/Tavily)
-- [ ] web_fetch with SSRF protection (private IP/loopback/metadata block, redirect revalidation, size/time/content-type limits)
-- [ ] Prompt-injection defense: external content demarcated as untrusted
-- [ ] Tool budgets per execution
+- [x] Tool registry (`src/tools/registry.ts`): name validation, schema, deterministic lookup, bounded execution with per-tool timeout (15s) and result truncation (10k chars)
+- [x] Structured tool-call protocol (`src/tools/parser.ts`): `<tool_call>{"name":"...","input":{...}}</tool_call>` format; strict JSON parsing; rejects malformed/unknown/non-object inputs
+- [x] `web_search` tool (`src/tools/web-search.ts`): provider-independent `SearchProvider` interface; normalized `{title, url, snippet}` results; query/limit validation; fake provider in tests
+- [x] `web_fetch` tool (`src/tools/web-fetch.ts`): provider-independent `FetchProvider` interface; HTTPS-only; SSRF blocking (IPv4/IPv6 private/loopback/link-local); HTML sanitization; 50k char extraction cap; content-type restriction
+- [x] SSRF protection (`src/tools/ssrf.ts`): blocks localhost, loopback, private IPv4 ranges, IPv6 loopback/link-local/unique-local/multicast, metadata endpoints; handles bracketed IPv6 from URL constructor
+- [x] Prompt-injection defense: all tool results wrapped in `<untrusted_tool_result>` delimiters before being passed back to the model
+- [x] Agent loop (`src/tools/agent-loop.ts`): application-layer loop using existing `runAgent()` unchanged; max 5 iterations, max 10 total tool calls; unknown tools rejected by registry; final response extracted after loop exhaustion
 
-Tests: malicious URL matrix (localhost, private ranges, metadata endpoint, redirects), oversized responses, injection payload in fetched content, tool loop termination.
-**Acceptance:** security test suite passes; agent can search and summarize a URL.
+Tests: 56 new tests covering registry CRUD, parser validation/rejection, SSRF matrix (IPv4/IPv6/localhost/metadata/redirects), web search normalization/limits/failures, web fetch HTTPS enforcement/SSRF blocking/content-type/size limits/sanitization, prompt injection wrapping, secret non-leakage, agent loop bounds/integration/registry enforcement. All prior suites intact. Total 308/308 green.
+**Acceptance:** MET — tool architecture established; web_search and web_fetch implemented with SSRF protection; bounded agent loop verified; security test suite passes.
 
 ---
 

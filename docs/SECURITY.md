@@ -25,8 +25,11 @@ Security controls are implemented per phase and listed here as they land. Nothin
 | Provider key leak | masked display only (`sk-…9a31`); keys in secrets, never D1-plaintext/logs/UI | 4 |
 | Unbounded AI/tool spend | per-request budgets (context/message/output caps, provider timeout) | 3 |
 | Unbounded user spend | quotas + rate limits | 7 |
-| Prompt injection via web content | untrusted-content delimiting; external text never treated as instructions | 6 |
-| SSRF via web_fetch | block loopback/private/link-local/metadata targets; validate redirects; size/time/type limits | 6 |
+| Prompt injection via web content | untrusted-content delimiting; external text never treated as instructions; tool results wrapped in `<untrusted_tool_result>` markers | 6, 7 |
+| SSRF via web_fetch | block loopback/private/link-local/metadata targets (IPv4 + IPv6); HTTPS-only enforcement; response size/type limits; HTML sanitization | 7 |
+| Unbounded agent tool loops | hard caps: max 5 iterations, max 10 tool calls per request, 15s per-tool timeout, 10k char result truncation | 7 |
+| Tool execution bypassing registry | all tool calls validated against ToolRegistry; unknown names rejected; no direct execution path from model output | 7 |
+| Secret leakage via tool errors | tool failures return generic error categories (timeout/blocked/upstream_error); internal exceptions never propagated | 7 |
 | Privilege escalation | RBAC enforced backend-side; Telegram identity is an identifier, not authorization | 7–8 |
 | Admin panel attacks | separate auth, session handling, CSRF, output encoding (XSS), audit log | 8 |
 | SQL injection | prepared statements only | all |

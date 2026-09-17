@@ -54,7 +54,13 @@ src/
   ai/                 IMPLEMENTED (Phase 4): credential sealing + AI Router
                       implementing the ModelProvider port
   memory/             short/long/semantic memory engines
-  tools/              tool registry + individual tools
+  tools/              IMPLEMENTED (Phase 7): types.ts (ToolDefinition, ToolResult,
+                      bounds), registry.ts (register/lookup/execute with timeout),
+                      parser.ts (structured <tool_call> extraction), ssrf.ts
+                      (IPv4/IPv6 URL blocking), web-search.ts (provider-independent
+                      SearchProvider interface), web-fetch.ts (provider-independent
+                      FetchProvider with SSRF/sanitization), agent-loop.ts
+                      (application-layer bounded loop over existing runAgent)
   quota/              quotas, usage tracking
   tasks/              reminders/workflows (Phase 9)
   admin/              admin CMS (Phase 8)
@@ -64,6 +70,45 @@ Rules:
 - `telegram/` knows nothing about AI. `ai/` knows nothing about Telegram. The agent core composes them.
 - External content (web fetch/search results) is always passed to the model inside explicit untrusted delimiters and never merged into system instructions.
 - All DB access goes through `db/` helpers that enforce user scoping — no raw ad-hoc queries in handlers.
+
+## Tool System (Phase 7)
+
+Tools live behind a provider-independent abstraction layer. The Agent Core
+(`src/agent/`) is completely unchanged — tool calling happens at the application
+layer using the existing `runAgent()` function.
+
+```
+ToolRegistry (src/tools/registry.ts)
+  register / lookup / execute with per-tool timeout (15s) + result truncation (10k chars)
+  name validation: lowercase alphanumeric + underscores, must start with letter
+
+Tool Parser (src/tools/parser.ts)
+  structured <tool_call>{"name":"...","input":{...}}</tool_call> format
+  strict JSON parsing; rejects malformed, unknown names, non-object inputs
+
+Web Search (src/tools/web-search.ts)
+  SearchProvider interface → normalized {title, url, snippet} results
+  query ≤500 chars, limit 1–10
+
+Web Fetch (src/tools/web-fetch.ts)
+  FetchProvider interface → HTTPS-only, SSRF-blocked, HTML-sanitized text
+  response cap: 50k chars extracted; only text/html/plain/json/xml accepted
+
+SSRF Protection (src/tools/ssrf.ts)
+  blocks: localhost, loopback (127.x), private (10.x, 172.16–31.x, 192.168.x),
+  link-local (169.254.x), multicast (224+), IPv6 ::1, fe80::, fc/fd, ff,
+  metadata endpoints; handles bracketed IPv6 from URL constructor
+
+Agent Loop (src/tools/agent-loop.ts)
+  runAgent() → parse tool calls → registry.execute() → wrap in <untrusted_tool_result>
+  → append to messages → repeat. Max 5 iterations, max 10 total tool calls.
+  Unknown tools rejected by registry. Final response extracted after loop exhaustion.
+```
+
+All tool results are wrapped in `<untrusted_tool_result>` delimiters before being
+passed back to the model. Tool failures produce generic error categories
+(timeout/blocked/upstream_error/validation_error); internal exceptions and
+credentials never propagate.
 
 ## AI provider abstraction (Phase 3 port; router lands in Phase 4)
 

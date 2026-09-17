@@ -3,21 +3,16 @@
 Telegram-first personal AI assistant on Cloudflare serverless infrastructure.
 No VPS, no persistent processes.
 
-**Current state: Phase 6 — first end-to-end conversational flow (uncommitted).**
-The Worker exposes `/healthz` and a secure Telegram webhook (`POST
-/telegram/webhook`) backed by D1. Private-chat text messages now run the full
-conversational path: idempotency claim → internal user → durable default
-conversation → user message persisted → bounded history → Agent Core →
-AI Router (sealed credentials, provider failover unchanged) → assistant
-message persisted → Telegram reply. Durable per-update processing states
-(`migrations/0005_phase6_orchestration.sql`) make generation idempotent: a
-Telegram update never triggers two AI generations, and redelivery reuses the
-persisted assistant reply. Telegram delivery itself remains at-least-once.
-Group/supergroup/channel chats are acknowledged without conversational
-processing. Built on the Phase 5 memory boundary (`conversations`/`messages`,
-owner-scoped by internal `users.id`, UUIDv4 ids, `seq` ordering, bounded
-history, one-way archive) and the provider-independent core in `src/agent/`.
-Unarchive and semantic/long-term memory remain deferred.
+**Current state: Phase 7 — Tools & Web (uncommitted).**
+Phase 7 adds a provider-independent tool system (`src/tools/`): a `ToolRegistry`
+with deterministic lookup and bounded execution, structured `<tool_call>` protocol
+for parsing model output, `web_search` and `web_fetch` tools behind injectable
+provider interfaces, SSRF protection (IPv4/IPv6 private/loopback/link-local
+blocking, HTTPS-only), HTML sanitization, and an application-layer agent loop
+(max 5 iterations, max 10 tool calls) that uses the existing Agent Core via
+`runAgent()` without modifying it. Tool results are wrapped in untrusted-content
+delimiters before being passed back to the model. All prior phases (1–6) remain
+intact and green.
 
 See `docs/IMPLEMENTATION-ROADMAP.md` (phase plan), `docs/ARCHITECTURE.md`,
 and `docs/SECURITY.md`.

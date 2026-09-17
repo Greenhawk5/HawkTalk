@@ -33,3 +33,8 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Notes
+errors.txt
+out.txt
+test_output.txt
