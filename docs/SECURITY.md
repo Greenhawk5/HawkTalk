@@ -24,20 +24,38 @@ Security controls are implemented per phase and listed here as they land. Nothin
 | Provider output/error leakage | generic AgentError codes only; raw throwables mapped to internal; provider text length-capped; core emits zero logs | 3 |
 | Provider key leak | masked display only (`sk-…9a31`); keys in secrets, never D1-plaintext/logs/UI | 4 |
 | Unbounded AI/tool spend | per-request budgets (context/message/output caps, provider timeout) | 3 |
-| Unbounded user spend | quotas + rate limits | 7 |
+| Unbounded user spend | durable role-keyed quotas + separate rate windows (`admission_policies`, `request_admissions`), enforced atomically before any conversation/AI work | 8 |
+| Privilege escalation via Telegram | `users.role` server-side only (CHECK-enforced enum, default USER); Telegram identity never carries authorization; no client path to roles/policies | 8 |
+| Quota double-charge on redelivery | admission ledger keyed by `update_id` PRIMARY KEY: the durable decision is reused, never recomputed; claim release only on `unavailable` | 8 |
+| Concurrent quota bypass | single-statement `INSERT … SELECT` per admission (statement-level atomicity, same mechanism as Phase 5 sequence allocation) inside a D1 batch; concurrency tests prove serialization | 8 |
+| Blocked users | BLOCKED role or non-active status fails closed before any processing; fixed rejection text, no AI | 8 |
+| Counters/infrastructure leakage in rejections | fixed application-layer texts per decision; no internal counters, SQL, or provider details | 8 |
 | Prompt injection via web content | untrusted-content delimiting; external text never treated as instructions; tool results wrapped in `<untrusted_tool_result>` markers | 6, 7 |
 | SSRF via web_fetch | block loopback/private/link-local/metadata targets (IPv4 + IPv6); HTTPS-only enforcement; response size/type limits; HTML sanitization | 7 |
 | Unbounded agent tool loops | hard caps: max 5 iterations, max 10 tool calls per request, 15s per-tool timeout, 10k char result truncation | 7 |
 | Tool execution bypassing registry | all tool calls validated against ToolRegistry; unknown names rejected; no direct execution path from model output | 7 |
 | Secret leakage via tool errors | tool failures return generic error categories (timeout/blocked/upstream_error); internal exceptions never propagated | 7 |
 | Privilege escalation | RBAC enforced backend-side; Telegram identity is an identifier, not authorization | 7–8 |
-| Admin panel attacks | separate auth, session handling, CSRF, output encoding (XSS), audit log | 8 |
 | SQL injection | prepared statements only | all |
 | Secret exposure in repo | `.gitignore` covers `API-Key`, `.env*`, `.dev.vars*`; verified | 0 |
 | Response tampering / caching | `Cache-Control: no-store`, `X-Content-Type-Options`, strict CSP, `Referrer-Policy` on every response | 1 |
 | Error detail leakage | fail-closed 500 with generic body; logs contain only `{event, request_id}` | 1 |
 | Request-ID spoofing | server-generated UUID always, caller `X-Request-ID` ignored | 1 |
 | Known vulnerable tooling | `npm audit --audit-level=low` in `npm run check`; sharp override 0.35.4 | 1 |
+
+### Phase 8 notes (Quotas & Abuse Protection)
+
+- Roles are a closed CHECK-enforced enum on `users.role`; the only writers are
+  server-side (SQL upsert defaults to USER). No webhook, tool, or model output
+  can change a role.
+- Admission decisions are computed from D1 state only (`users`, `admission_policies`,
+  `request_admissions`); no in-memory counters participate in correctness.
+- Rejection texts are constants in `src/orchestration/admission.ts`; they carry no
+  user data, counters, or infrastructure details.
+- Known limitations: window boundaries use the Worker-isolate clock (globally
+  consistent time across isolates is not guaranteed); quota is consumed at
+  admission and not refunded on AI failure; admission rows accumulate (cleanup
+  deferred); policy changes require direct D1 edits until the Admin CMS phase.
 
 ## Ground rules (enforced across all phases)
 

@@ -3,16 +3,16 @@
 Telegram-first personal AI assistant on Cloudflare serverless infrastructure.
 No VPS, no persistent processes.
 
-**Current state: Phase 7 — Tools & Web (uncommitted).**
-Phase 7 adds a provider-independent tool system (`src/tools/`): a `ToolRegistry`
-with deterministic lookup and bounded execution, structured `<tool_call>` protocol
-for parsing model output, `web_search` and `web_fetch` tools behind injectable
-provider interfaces, SSRF protection (IPv4/IPv6 private/loopback/link-local
-blocking, HTTPS-only), HTML sanitization, and an application-layer agent loop
-(max 5 iterations, max 10 tool calls) that uses the existing Agent Core via
-`runAgent()` without modifying it. Tool results are wrapped in untrusted-content
-delimiters before being passed back to the model. All prior phases (1–6) remain
-intact and green.
+**Current state: Phase 8 — Quotas & Abuse Protection (uncommitted; Phase 7 committed as `ea00364`).**
+Phase 8 adds durable, role-aware usage limits at the orchestration boundary:
+server-side roles (OWNER/ADMIN/VIP/USER/BLOCKED, default USER), role-keyed
+`admission_policies` (daily quota, per-second/hour rate windows, per-mechanism
+bypass flags), and an atomic update-keyed admission ledger (`request_admissions`)
+enforced before any conversation work — a rejected request never touches the
+default conversation, Agent Core, AI Router, tools, or providers. Rejections use
+fixed application-layer texts. Redelivery of the same Telegram update reuses the
+durable admission decision and can never double-charge quota. All prior phases
+(1–7) remain intact and green.
 
 See `docs/IMPLEMENTATION-ROADMAP.md` (phase plan), `docs/ARCHITECTURE.md`,
 and `docs/SECURITY.md`.

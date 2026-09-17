@@ -54,6 +54,7 @@ function makeDeps(overrides: Partial<ConversationFlowDeps> = {}): ConversationFl
   return {
     orchestrator,
     processing,
+    admission: { admit: async () => 'allowed' },
     provider: echoProvider(),
     requestId: 'req-orchestration-test',
     agentUserId: '0',

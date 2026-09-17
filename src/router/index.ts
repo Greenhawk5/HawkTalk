@@ -1,3 +1,4 @@
+import { D1AdmissionGate } from '../db/admission-d1';
 import type { AppEnv } from '../env';
 import { handleTelegramWebhook, TELEGRAM_WEBHOOK_PATH } from '../telegram/webhook';
 import type { ConversationFlowFactory } from '../telegram/webhook';
@@ -21,6 +22,7 @@ export function productionFlow(env: Partial<AppEnv>): ConversationFlowFactory | 
   return (requestId: string, internalUserId: number): ConversationFlowDeps => ({
     orchestrator: new D1ConversationOrchestrator(db, new D1ConversationRepository(db)),
     processing: new D1ProcessingRepository(db),
+    admission: new D1AdmissionGate(db),
     provider,
     requestId,
     agentUserId: String(internalUserId),

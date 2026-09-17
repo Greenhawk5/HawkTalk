@@ -212,6 +212,12 @@ export async function handleTelegramWebhook(
     }
     const flowDeps = flow(requestId, internalUserId);
     const result = await handleUserTextMessage(update.updateId, update.text, flowDeps);
+    // Deterministic policy rejection (Phase 8): the admission ledger recorded
+    // it durably, no AI ran, and the claim stays so Telegram redelivery of the
+    // same update hits the durable decision without double-charging.
+    // 'unavailable' is an infrastructure failure, not a policy decision:
+    // treat it as pre-generation so the claim releases and redelivery retries.
+    if (result.decision === 'unavailable') throw new ConversationFlowError('conversation_failed');
     assistantText = result.assistantText;
   } catch (error) {
     if (error instanceof ConversationFlowError) flowErrorKind = error.kind;

@@ -1,3 +1,4 @@
+import { admissionReply, type AdmissionDecision, type AdmissionGate } from './admission';
 import { runAgent } from '../agent/engine';
 import type { ModelProvider } from '../agent/provider';
 import type { AgentRequest } from '../agent/types';
@@ -50,6 +51,7 @@ export class ConversationFlowError extends Error {
 }
 
 export interface ConversationFlowDeps {
+  admission: AdmissionGate;
   orchestrator: ConversationOrchestrator;
   processing: ProcessingRepository;
   /** The Agent Core provider port; the AI Router in production, a fake in tests. */
@@ -67,8 +69,10 @@ export interface ConversationFlowDeps {
 }
 
 export interface ConversationFlowResult {
-  state: 'completed' | 'reused';
+  state: 'completed' | 'reused' | 'rejected';
   assistantText: string;
+  /** Set only when state is 'rejected': the durable admission decision. */
+  decision?: AdmissionDecision;
 }
 
 /**
@@ -86,6 +90,10 @@ export async function handleUserTextMessage(
   deps: ConversationFlowDeps,
 ): Promise<ConversationFlowResult> {
   const { orchestrator, processing } = deps;
+  const decision = await deps.admission.admit(deps.userId, updateId).catch(() => 'unavailable' as const);
+  if (decision !== 'allowed') {
+    return { state: 'rejected', assistantText: admissionReply(decision), decision };
+  }
 
   const { conversation } = await orchestrator.resolveDefaultConversation(deps.userId).catch(() => {
     throw new ConversationFlowError('conversation_failed');

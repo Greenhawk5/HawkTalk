@@ -212,22 +212,45 @@ Tests: 56 new tests covering registry CRUD, parser validation/rejection, SSRF ma
 
 ## PHASE 8 — Quotas & Abuse Protection
 
-**Objective:** Roles, quotas, rate limits, usage tracking.
+**Objective:** Roles, quotas, rate limits, usage tracking. Admin CMS is the subsequent
+phase (next section) — not part of Phase 8.
 
 Tasks:
-- [ ] RBAC: OWNER/ADMIN/VIP/USER/BLOCKED
-- [ ] Quota engine (messages/day etc., configurable) + usage tracking
-- [ ] Rate limits (per-second, hourly burst) separate from quotas
-- [ ] Blocked user handling; admin bypass policy
+- [x] RBAC: OWNER/ADMIN/VIP/USER/BLOCKED as durable server-side user roles
+      (`users.role` CHECK-enforced; defaults to USER on upsert; never client-settable)
+- [x] Quota engine: role-keyed `admission_policies` (configurable daily_messages);
+      durable per-update usage ledger (`request_admissions`) with quota_units accounting
+- [x] Rate limits (per-second, hourly burst) separate from quotas; independent
+      bypass flags per policy; fixed UTC-aligned windows
+- [x] Blocked user handling (BLOCKED role + non-active status both fail closed);
+      admin/OWNER quota bypass policy via `bypass_quota`/`bypass_rate`
+- [x] Atomic admission gate: single-statement `INSERT … SELECT` keyed by update_id
+      PRIMARY KEY + D1 batch; enforced in orchestration before conversation work
+- [x] Application-layer deterministic rejection texts (no AI invocation for rejections)
 
-Tests: quota exhausted, rate limited, blocked user, admin bypass, duplicate-update quota double-charge.
-**Acceptance:** limits enforced; edge cases covered.
+Tests: 13 admission-engine tests (boundary, concurrency serialization, duplicate-update
+single-charge, midnight reset, per-second/hour windows, user isolation, role policies,
+inactive-user fail-closed, admin bypass with retained rate protection) + 6 webhook
+admission tests (no AI/no rows/claim retention on rejection, unavailable→500+claim
+release, redelivery no-double-charge, transport-only no admission writes). All prior
+suites intact. Total 327/327 green.
+Security: roles and policies live only in D1 server-side; Telegram identity never
+carries authorization; admission ledger keyed by update_id prevents double-charge on
+redelivery; rejections emit fixed application-layer texts (no counters/infrastructure
+details); ledger indices bounded (per-user time index); no new secrets.
+Known limitations: per-isolate clock (Worker runtime) drives window boundaries —
+globally consistent time is not guaranteed across isolates; quota counts messages
+admitted (failed AI generation still consumes quota by design); no admin UI to change
+policies (D1 rows editable manually); admission rows accumulate (cleanup deferred).
+Manual actions: approval, Git operations, deployment remain human-controlled.
+**Acceptance:** MET — atomic enforcement verified; edge cases covered; quality gate green.
 
 ---
 
-## PHASE 8 — Admin CMS
+## PHASE 8 (subsequent) — Admin CMS
 
-**Objective:** Admin dashboard (Workers-served UI), full RBAC.
+**Objective:** Admin dashboard (Workers-served UI), full RBAC UI. Numbering retained
+from the original roadmap; this phase follows Quotas & Abuse Protection.
 
 Tasks:
 - [ ] Admin auth (separate from Telegram identity), session handling

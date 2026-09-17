@@ -28,11 +28,14 @@ src/
                       (incl. chatType), types.ts, ack.ts (transport-only reply)
   orchestration/      IMPLEMENTED (Phase 6, thin application layer):
                       service.ts (conversational use-case + durable idempotency
-                      ordering), types.ts (ports), conversation-orchestrator.ts
+                      ordering + admission gate before conversation work),
+                      types.ts (ports), conversation-orchestrator.ts
                       (default conversation resolution), processing-d1.ts
                       (durable update state machine), production.ts (AI Router
-                      composition). Coordinates components; owns no parsing,
-                      provider selection, or Telegram retry policy.
+                      composition), admission.ts (AdmissionGate port +
+                      deterministic rejection texts). Coordinates components;
+                      owns no parsing, provider selection, or Telegram retry
+                      policy.
   db/                 IMPLEMENTED (Phase 2 + 4 + 5 + 6): telegram.ts — user upsert +
                       atomic update_id claim helpers; users.ts — internal user
                       lookup; providers.ts — provider/credential row reads;
@@ -45,7 +48,8 @@ src/
                       injected repository (UUIDv4 ids, roles, 20k/100k/100
                       history caps, archive/delete). No Telegram/D1/network in
                       the service contract; repository is injected.
-  security/           webhook auth, RBAC, rate limiting, isolation checks
+  security/           webhook auth, isolation checks (RBAC/rate limiting live in
+                      db/admission-d1.ts + orchestration/admission.ts, Phase 8)
   agent/              IMPLEMENTED (Phase 3, core only, no I/O): types.ts
                       (AgentRequest/Message/Config/Response + bounds),
                       provider.ts (ModelProvider port), errors.ts (AgentError /
@@ -135,8 +139,12 @@ Phase 5: `conversations`, `messages` (durable history, user-scoped; semantic mem
 Phase 6: `processed_updates` extended with durable processing states
 (`processing_state`, `conversation_id`, `assistant_message_id`) +
 `default_conversations` (per-user default mapping)
-Phase 7: `roles/quotas/usage/rate_limits`
-Phase 8: `agent_settings`, `prompt_versions`, `feature_flags`, `audit_logs`
+Phase 7 (committed `ea00364`): tools (`src/tools/`) — no new tables
+Phase 8 (Quotas & Abuse Protection): `users.role` column (OWNER/ADMIN/VIP/USER/BLOCKED,
+server-side only), `admission_policies` (role-keyed quota/rate/bypass policy),
+`request_admissions` (update_id-keyed usage ledger)
+Admin CMS (subsequent phase, numbering retained): `agent_settings`, `prompt_versions`,
+`feature_flags`, `audit_logs`
 Phase 9: `tasks`
 
 Migrations in `/migrations`, applied via `wrangler d1 migrations apply`.
@@ -149,7 +157,11 @@ Telegram webhook → secret check (constant-time) → parse update (incl. chatTy
   → unsupported / non-private chats: acknowledge, stop
   → upsert Telegram user → resolve internal users.id
   → conversational flow (src/orchestration):
-      resolve/create default conversation (owner-scoped, atomic)
+      admission gate (Phase 8, before any conversation work): role/quota/rate
+      decision recorded atomically per update_id; deterministic rejection →
+      fixed application text, no conversation persistence, no AI, claim kept;
+      'unavailable' → fail closed, claim released for redelivery retry
+      → resolve/create default conversation (owner-scoped, atomic)
       → durable markGenerating (claimed → generating; the regeneration gate)
       → persist user message
       → load bounded history (≤20 msgs, service caps)
@@ -168,6 +180,37 @@ a crash between persist and complete stays `generating` — redelivery reuses
 the persisted assistant message for delivery. Telegram sendMessage is
 at-least-once externally: a timed-out send that reached Telegram can deliver
 twice; generation and persistence remain idempotent per update_id.
+
+## Quotas & Abuse Protection (Phase 8)
+
+Enforcement lives at the orchestration boundary — never in Agent Core, provider
+adapters, the AI Router, Telegram client, or tool implementations:
+
+```
+AdmissionGate port (src/orchestration/admission.ts)
+  admit(userId, updateId) → allowed | quota_exceeded | rate_limited | blocked | unavailable
+  deterministic user-facing texts per decision (application-generated, no AI)
+
+D1AdmissionGate (src/db/admission-d1.ts)
+  one atomic INSERT…SELECT per admission, keyed by request_admissions.update_id
+  PRIMARY KEY (concurrent deliveries cannot both consume) inside a D1 batch;
+  second statement reads back the durable decision ('unavailable' on miss).
+  Decision logic: BLOCKED role or non-active user → blocked; rate windows
+  (per-second, per-hour) checked before quota (daily) unless policy bypasses;
+  windows are fixed UTC-aligned periods computed from an injected Clock.
+  Ledger rows are immutable: redelivery finds the update_id already present
+  and reuses the recorded decision — never double-charges.
+
+Policies (admission_policies, role-keyed)
+  daily_messages, per_second, per_hour limits; bypass_quota/bypass_rate flags
+  (OWNER/ADMIN bypass quota, still rate-limited; BLOCKED: all zero). Rows are
+  trusted server-side configuration — no client input reaches them.
+
+Quota semantics: one quota unit per ALLOWED text update (charged at admission,
+before generation; a subsequent AI failure does not refund). Malformed,
+unsupported, non-private, unauthorized, and duplicate deliveries consume
+nothing new. Rate units accrue for allowed and quota_exceeded decisions.
+```
 
 ## Persistence boundary (Phase 5)
 

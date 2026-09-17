@@ -57,7 +57,7 @@ export async function claimUpdate(
 // Used ONLY when processing failed after claiming (e.g. reply send failed and
 // we returned 500). Success and duplicate paths never release.
 export async function releaseUpdateClaim(db: D1Database, updateId: number): Promise<void> {
-  await db.prepare('DELETE FROM processed_updates WHERE update_id = ?').bind(updateId).run();
+  await db.prepare('DELETE FROM processed_updates WHERE update_id = ? AND processing_state = \'claimed\'').bind(updateId).run();
 }
 
 export async function countProcessedUpdates(db: D1Database, updateId: number): Promise<number> {

@@ -1,3 +1,4 @@
+import { D1AdmissionGate } from '../src/db/admission-d1';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import worker from '../src';
@@ -513,6 +514,7 @@ function flowDeps(userId: number, provider: ModelProvider, requestId: string): C
   return {
     orchestrator: new D1ConversationOrchestrator(env.DB, new D1ConversationRepository(env.DB)),
     processing: new D1ProcessingRepository(env.DB),
+    admission: new D1AdmissionGate(env.DB),
     provider,
     requestId,
     agentUserId: String(userId),
