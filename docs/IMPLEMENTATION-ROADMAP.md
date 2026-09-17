@@ -6,14 +6,16 @@ Status legend: `[ ]` Not started · `[-]` In progress · `[x]` Completed · `[!]
 
 ---
 
-## Current repository state (audited 2026-09-17, updated after Phase 2)
+## Current repository state (audited 2026-09-17, updated after Phase 5)
 
-- Git repo on `main`, baseline commit `46db0bc` + uncommitted work: `/temp` ignore rule and Phase 2 implementation (uncommitted by policy).
+- Git repo on `main`, baseline commit `34c2c29` + uncommitted Phase 5 implementation (uncommitted by policy).
 - Phase 1 foundation (Worker, `/healthz`, D1, Vitest pool, ESLint, strict TS) intact and green.
 - Phase 2 implemented: Telegram transport (`src/telegram/`, `src/db/telegram.ts`, `migrations/0002_telegram.sql`, webhook route).
+- Phase 4 implemented: AI router layer (`src/ai/`, `src/db/providers.ts`, `migrations/0003_ai_providers.sql`).
+- Phase 5 implemented: durable conversations/messages (`src/conversation/`, `src/db/conversation-*.ts`, `migrations/0004_conversations.sql`) — not yet wired into any route (no product behavior change by scope).
 - `API-Key` remains untracked + gitignored — never read, never exposed.
 - Toolchain: Node v22.17.0, Wrangler 4.133.0, `npm run check` green.
-- Constraint: Windows 11 host; commands must be git-bash compatible.
+- Constraint: Windows 11 host; PowerShell tooling.
 
 ## Global rules
 
@@ -128,16 +130,29 @@ Tests: routing order, cooldown on 429, failover across providers, all-providers-
 
 ## PHASE 5 — Memory
 
-**Objective:** Short-term context + long-term memory, user-scoped.
+**Objective:** Durable conversations and messages, user-scoped at the data-access layer. NOTE: the original draft plan (semantic memory, `memories` table, context injection) was superseded by explicit approval — Phase 5 implements durable conversations/messages only, with the semantic-memory placeholder deferred to Phase 10.
 
 Tasks:
-- [ ] `memories` table + memory engine (write rules, retrieval, reset)
-- [ ] Semantic-memory architecture placeholder (interface, not implementation)
-- [ ] Context assembly: recent history + relevant memory
-- [ ] Cross-user isolation enforcement at data-access layer
+- [x] `conversations` + `messages` tables (`migrations/0004_conversations.sql`), scoped by internal `users.id` (never Telegram ID)
+- [x] UUIDv4 conversation/message IDs (`crypto.randomUUID()`, validated by regex + DB CHECK length = 36)
+- [x] Deterministic concurrency-safe per-conversation sequence: single-statement atomic `INSERT ... SELECT last_seq + 1 ... RETURNING` guarded by a `BEFORE INSERT` trigger (ownership + active status + exact next-seq), `UNIQUE(conversation_id, seq)` as backup
+- [x] Transactional appends: one atomic statement advances `last_seq`, inserts the message, and stamps the conversation timestamp (trigger-maintained)
+- [x] Bounded history/context in `src/conversation/service.ts`: newest contiguous suffix, ≤100 messages, ≤20k chars per message, ≤100k chars total; system prompt policy stays in AgentCore config (8k), not persisted
+- [x] Server-generated service timestamps through injected `Clock` (runtime default, deterministic test clock); public callers cannot supply timestamps; message ordering uses `seq`
+- [x] One-way archive (`active` → `archived`) through a dedicated repository API; no generic status mutation or unarchive; archived conversations reject appends and allow cascade deletion via FK `ON DELETE CASCADE`; no retention jobs
+- [x] Roles system/user/assistant only, enforced by CHECK constraint
+- [x] No metadata column: unsupported structured fields rejected (no arbitrary baggage)
+- [x] Small injected repository/service interfaces (`src/db/conversation-repository.ts`, `src/db/conversation-d1.ts`, `src/conversation/service.ts`); plain detached row objects; no D1 in AgentCore
+- [x] Every operation scoped by authenticated application user id + conversation id, enforced in every SQL statement
 
-Tests: memory CRUD, isolation tests (user A cannot read user B), injection into context, reset.
-**Acceptance:** "remember that…" persists and only the owner sees it.
+Tests: 33 Phase 5 tests covering schema constraints, ownership/isolation, invalid input, injected/runtime clocks, rejected timestamp overrides, timestamp consistency, concurrency sequence allocation, bounded history/context, one-way archive and cascade deletion, content faithfulness, metadata rejection, and no-log behavior. Migration replay/idempotency is covered separately in the database suite. Acceptance requires a fresh complete verification run; prior green counts are not approval.
+Security: prepared statements only; ownership scoped per statement; no content heuristics/scanning/redaction (opaque faithful text); no content in logs; no metadata columns to carry credentials.
+Implementation notes: ownership consistency uses a composite foreign key and owner-scoped statements; atomic append plus triggers enforce exact next-sequence allocation, with a UNIQUE constraint as backup and no retry loop. Vitest disables Wrangler dotenv loading through explicit environment settings and `envFiles`; other Wrangler commands must also explicitly disable secret auto-loading when verifying.
+Known limitations: no transport wiring, semantic/long-term memory, retention jobs, or unarchive. Sequence allocation is gapless for appends; explicit message deletion leaves historical gaps without reusing sequence numbers. Concurrent writers are ordered by database serialization, not invocation order. Deletion timestamp touches use the database runtime clock rather than the service's injected clock.
+Manual actions: approval, Git operations, and deployment remain human-controlled.
+**Acceptance:** Pending human approval after complete verification.
+
+**Status: WAITING FOR HUMAN APPROVAL**
 
 ---
 

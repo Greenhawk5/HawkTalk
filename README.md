@@ -3,12 +3,21 @@
 Telegram-first personal AI assistant on Cloudflare serverless infrastructure.
 No VPS, no persistent processes.
 
-**Current state: Phase 3 — Agent Core (unwired).** The Worker exposes `/healthz`
-and a secure Telegram webhook (`POST /telegram/webhook`) backed by D1
-(`users`, `processed_updates`). Text messages get a transport acknowledgement.
-`src/agent/` adds the provider-independent core (request/context model,
-`ModelProvider` port, stable errors, validation engine) with 53 unit tests —
-but no provider is implemented or wired yet, so there are still no AI replies.
+**Current state: Phase 5 — Memory (durable conversations/messages, unwired).**
+The Worker exposes `/healthz` and a secure Telegram webhook (`POST
+/telegram/webhook`) backed by D1 (`users`, `processed_updates`). Text messages
+get a transport acknowledgement. `src/agent/` holds the provider-independent
+core (no provider is wired yet, so there are still no AI replies). Phase 5
+adds the durable persistence boundary: `conversations`/`messages` tables
+(`migrations/0004_conversations.sql`), an injected D1 repository
+(`src/db/conversation-*.ts`) and a validating service
+(`src/conversation/service.ts`) — every operation scoped by internal
+`users.id`, UUIDv4 ids, deterministic per-conversation sequence, bounded
+history (100 msgs / 20k chars / 100k total), one-way archive + cascade delete.
+Service timestamps are server-generated through an injectable `Clock`; ordering
+uses message `seq`. Unarchive and semantic/long-term memory are deferred.
+Not yet exposed via any route; no product behavior changed. Phase 5 awaits human
+approval and is uncommitted.
 
 See `docs/IMPLEMENTATION-ROADMAP.md` (phase plan), `docs/ARCHITECTURE.md`,
 and `docs/SECURITY.md`.

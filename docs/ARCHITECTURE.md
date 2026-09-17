@@ -24,8 +24,17 @@ src/
   telegram/           IMPLEMENTED (Phase 2, transport only): webhook.ts (auth +
                       validation + idempotency + placeholder reply), client.ts
                       (sendMessage, bounded retry), parser.ts, types.ts
-  db/                 IMPLEMENTED (Phase 2): telegram.ts — user upsert +
-                      atomic update_id claim helpers (prepared statements only)
+  db/                 IMPLEMENTED (Phase 2 + 4 + 5): telegram.ts — user upsert +
+                      atomic update_id claim helpers; providers.ts — provider/
+                      credential row reads; conversation-repository.ts (port),
+                      conversation-d1.ts (D1 adapter), conversation-types.ts —
+                      durable conversations/messages, every statement scoped by
+                      internal users.id, detached plain row objects
+  conversation/       IMPLEMENTED (Phase 5, persistence boundary service):
+                      service.ts — validation + bounds orchestration over the
+                      injected repository (UUIDv4 ids, roles, 20k/100k/100
+                      history caps, archive/delete). No Telegram/D1/network in
+                      the service contract; repository is injected.
   security/           webhook auth, RBAC, rate limiting, isolation checks
   agent/              IMPLEMENTED (Phase 3, core only, no I/O): types.ts
                       (AgentRequest/Message/Config/Response + bounds),
@@ -65,8 +74,8 @@ D1 plaintext; all external representations are masked (e.g. `sk-…9a31`).
 
 Phase 2: `users`, `processed_updates` (idempotency)
 Phase 3: no new tables (context is caller-supplied; persistence deferred to Phase 5)
-Phase 4: `providers`, `provider_keys`, `provider_models`, `provider_health`
-Phase 5: `memories`
+Phase 4: `providers`, `provider_credentials`
+Phase 5: `conversations`, `messages` (durable history, user-scoped; semantic memory deferred to Phase 10)
 Phase 7: `roles/quotas/usage/rate_limits`
 Phase 8: `agent_settings`, `prompt_versions`, `feature_flags`, `audit_logs`
 Phase 9: `tasks`
@@ -82,6 +91,45 @@ Telegram webhook → secret check → parse update → dedupe (update_id)
   → AI router → provider → reply
   → persist message → send via Telegram client
 ```
+
+## Persistence boundary (Phase 5)
+
+Durable conversations/messages live behind small injected interfaces; nothing
+outside `src/db/conversation-*.ts` touches their tables, and the Agent Core
+has no D1 access (context is supplied by the application layer):
+
+```
+ConversationService (src/conversation/service.ts)
+  validates + bounds every argument (UUIDv4 ids, roles, title/content sizes,
+  list/history limits), then calls:
+ConversationRepository (src/db/conversation-repository.ts, port)
+  implemented by D1ConversationRepository (src/db/conversation-d1.ts):
+  prepared statements only, every query scoped by internal users.id,
+  atomic single-statement append (INSERT ... SELECT last_seq + 1 ... RETURNING
+  guarded by a trigger enforcing ownership + active status + exact next seq,
+  UNIQUE(conversation_id, seq) as backup), history read as the newest
+  contiguous suffix by seq.
+```
+
+- Ownership: `users.id` is the only ownership key; a row not owned by the
+  caller is indistinguishable from a missing row on every operation.
+- Message content is opaque, faithful, arbitrary text (secrets included) —
+  no scanning, redaction, or heuristics anywhere in the boundary.
+- Message `id`s are generated server-side via `crypto.randomUUID()` and
+  validated (regex + `length = 36` CHECK); no caller-supplied ids.
+- No metadata/structured-field columns: unsupported fields are rejected
+  outright so arbitrary payload baggage (e.g. credentials) cannot be stored.
+- Service timestamps come from an injected `Clock`, defaulting to server/runtime
+  `RuntimeClock`; public operations accept no caller timestamps. Tests can inject
+  a deterministic clock. Append, rename, and archive preserve nondecreasing
+  timestamps; message ordering uses `seq`, not wall-clock time. Message deletion
+  touches the conversation using the database runtime clock.
+- Archive is one-way in Phase 5 (`active` → `archived`): the repository exposes
+  dedicated rename/archive operations, not generic status mutation. Archived
+  conversations reject appends but remain readable, renameable, and deletable.
+  Unarchive is deferred. Delete cascades to messages via FK; no retention jobs.
+- Semantic and long-term memory remain deferred; this boundary only prepares
+  bounded provider-neutral history/context.
 
 Every step is wrapped in one correlation/request ID; failures produce safe user-facing errors and sanitized internal logs.
 
