@@ -12,8 +12,11 @@ Security controls are implemented per phase and listed here as they land. Nothin
 | Oversized webhook payloads | 256 KiB body cap → 413; strict content-type + JSON + update_id validation | 2 |
 | Cross-user data access | user-scoped queries enforced in `db/` layer + tests | 2–5 |
 | Duplicate update double-processing | `update_id` idempotency table | 2 |
+| Untrusted agent input | full request/config/message/metadata validation with central bounds; prototype-pollution keys rejected | 3 |
+| Provider output/error leakage | generic AgentError codes only; raw throwables mapped to internal; provider text length-capped; core emits zero logs | 3 |
 | Provider key leak | masked display only (`sk-…9a31`); keys in secrets, never D1-plaintext/logs/UI | 4 |
-| Unbounded AI/tool spend | execution budget per request; quotas + rate limits | 3, 7 |
+| Unbounded AI/tool spend | per-request budgets (context/message/output caps, provider timeout) | 3 |
+| Unbounded user spend | quotas + rate limits | 7 |
 | Prompt injection via web content | untrusted-content delimiting; external text never treated as instructions | 6 |
 | SSRF via web_fetch | block loopback/private/link-local/metadata targets; validate redirects; size/time/type limits | 6 |
 | Privilege escalation | RBAC enforced backend-side; Telegram identity is an identifier, not authorization | 7–8 |

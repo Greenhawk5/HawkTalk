@@ -3,10 +3,12 @@
 Telegram-first personal AI assistant on Cloudflare serverless infrastructure.
 No VPS, no persistent processes.
 
-**Current state: Phase 2 — Telegram transport.** The Worker exposes `/healthz`
+**Current state: Phase 3 — Agent Core (unwired).** The Worker exposes `/healthz`
 and a secure Telegram webhook (`POST /telegram/webhook`) backed by D1
-(`users`, `processed_updates`). Text messages get a transport acknowledgement;
-the Agent Core (Phase 3) does not exist yet, so there are no AI replies.
+(`users`, `processed_updates`). Text messages get a transport acknowledgement.
+`src/agent/` adds the provider-independent core (request/context model,
+`ModelProvider` port, stable errors, validation engine) with 53 unit tests —
+but no provider is implemented or wired yet, so there are still no AI replies.
 
 See `docs/IMPLEMENTATION-ROADMAP.md` (phase plan), `docs/ARCHITECTURE.md`,
 and `docs/SECURITY.md`.

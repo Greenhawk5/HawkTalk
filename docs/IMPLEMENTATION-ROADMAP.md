@@ -87,18 +87,25 @@ Manual actions: create bot via BotFather, set `TELEGRAM_BOT_TOKEN` + `TELEGRAM_W
 
 ## PHASE 3 — Agent Core
 
-**Objective:** Working conversational agent with a single default provider.
+**Objective:** Provider-independent, transport-independent Agent Core boundary
+(interfaces + orchestration only). NOTE: this supersedes the earlier draft plan
+below — per explicit approval, Phase 3 implements NO real provider, NO API
+keys, NO D1 conversation persistence, and NO Telegram wiring.
 
 Tasks:
-- [ ] Provider interface (`AIProvider`) + first concrete provider
-- [ ] Conversation engine: conversations/messages tables, context construction
-- [ ] System prompt (HawkTalk identity), context window management
-- [ ] Response pipeline: user msg → context → LLM → reply
-- [ ] Execution budget (max tokens, max turns)
+- [x] `AgentRequest` / `AgentMessage` (system/user/assistant) / `AgentConfig` / `AgentResponse` types (`src/agent/types.ts`)
+- [x] `ModelProvider` port: `generate(input)` → provider-neutral result; credentials never cross it (`src/agent/provider.ts`)
+- [x] Stable error model: `AgentError` codes (invalid_request, provider_unavailable/timeout/failure/malformed, internal); `ProviderError` mapped, never propagated (`src/agent/errors.ts`)
+- [x] Engine: validate → normalize context (system prompt first, order preserved, empties dropped) → provider with timeout race → normalize result (`src/agent/engine.ts`)
+- [x] Bounds in one place (message/context/output/metadata/timeout caps); no logs, no I/O, no global state in core
 
-Tests: pipeline unit tests with mocked provider, empty/long message, provider failure → graceful error.
-Manual actions: provide a real LLM API key as a secret.
-**Acceptance:** natural conversation works through Telegram locally.
+Tests: 53 agent unit tests (validation incl. prototype-pollution, normalization, fake-provider matrix, timeout race, no-network stub, isolation) + all Phase 1/2 suites intact. Total 138/138 green.
+Security: every field validated as untrusted; generic error messages only; no message/prompt logging (core emits zero logs); provider output length-capped; raw throwables mapped to internal.
+Deviations: none from the approved scope. Deliberately NOT built: concrete providers, AI Router, retries/health (Phase 4), D1 `conversations`/`messages` tables (not strictly necessary — context is caller-supplied; state stays behind the future Phase 5 boundary), Telegram adapter/wiring (interfaces only).
+Manual actions: none.
+**Acceptance:** MET — core runs fully offline against injected fakes with stable errors.
+
+**Status: COMPLETE**
 
 ---
 

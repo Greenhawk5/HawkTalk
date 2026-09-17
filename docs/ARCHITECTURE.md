@@ -27,7 +27,11 @@ src/
   db/                 IMPLEMENTED (Phase 2): telegram.ts — user upsert +
                       atomic update_id claim helpers (prepared statements only)
   security/           webhook auth, RBAC, rate limiting, isolation checks
-  agent/              agent core: context construction, execution budget
+  agent/              IMPLEMENTED (Phase 3, core only, no I/O): types.ts
+                      (AgentRequest/Message/Config/Response + bounds),
+                      provider.ts (ModelProvider port), errors.ts (AgentError /
+                      ProviderError), engine.ts (validate → normalize →
+                      provider → normalize). No Telegram/D1/network/credentials.
   ai/                 AIProvider interface + router + concrete providers
   memory/             short/long/semantic memory engines
   tools/              tool registry + individual tools
@@ -41,21 +45,26 @@ Rules:
 - External content (web fetch/search results) is always passed to the model inside explicit untrusted delimiters and never merged into system instructions.
 - All DB access goes through `db/` helpers that enforce user scoping — no raw ad-hoc queries in handlers.
 
-## AI provider abstraction
+## AI provider abstraction (Phase 3 port; router lands in Phase 4)
 
 ```ts
-interface AIProvider {
+interface ModelProvider {
   readonly id: string;
-  chat(req: ChatRequest, signal?: AbortSignal): Promise<ChatResult>;
+  generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult>;
 }
 ```
 
-Concrete providers (OpenRouter, Z.AI, OpenAI-compatible) implement this interface. The **AI Router** wraps a set of configured provider instances + API keys and decides which to try: round-robin / weighted / health-aware, with cooldown on 429 and bounded failover. Agent core only ever sees the router. Keys are stored in Cloudflare secrets/config, never in D1 plaintext; all external representations are masked (e.g. `sk-…9a31`).
+`ProviderGenerateInput` carries only `{ requestId, model, systemPrompt,
+messages, maxOutputTokens, temperature?, signal? }` — no credentials, no
+transport types. The Phase 4 AI Router implements this interface; concrete
+providers (OpenRouter, Z.AI, OpenAI-compatible) sit behind it, each owning its
+own key management. The Agent Core only ever sees the port. Keys are never in
+D1 plaintext; all external representations are masked (e.g. `sk-…9a31`).
 
 ## Data model (per-phase, never all at once)
 
 Phase 2: `users`, `processed_updates` (idempotency)
-Phase 3: `conversations`, `messages`
+Phase 3: no new tables (context is caller-supplied; persistence deferred to Phase 5)
 Phase 4: `providers`, `provider_keys`, `provider_models`, `provider_health`
 Phase 5: `memories`
 Phase 7: `roles/quotas/usage/rate_limits`
