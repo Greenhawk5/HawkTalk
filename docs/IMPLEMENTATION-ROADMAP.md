@@ -6,12 +6,13 @@ Status legend: `[ ]` Not started · `[-]` In progress · `[x]` Completed · `[!]
 
 ---
 
-## Current repository state (audited 2026-09-17)
+## Current repository state (audited 2026-09-17, updated after Phase 2)
 
-- Git repo initialized on `main`, **zero commits**.
-- Files present: `.gitignore`, `package.json` (wrangler ^4.133.0 devDependency), `package-lock.json`, `node_modules/`, `API-Key` (untracked, gitignored — contains a secret, do not read or expose its contents).
-- No source code, no wrangler config, no tests, no CI.
-- Toolchain verified: Node v22.17.0, Wrangler 4.133.0 (`d1`, `workflows` subcommands confirmed).
+- Git repo on `main`, baseline commit `46db0bc` + uncommitted work: `/temp` ignore rule and Phase 2 implementation (uncommitted by policy).
+- Phase 1 foundation (Worker, `/healthz`, D1, Vitest pool, ESLint, strict TS) intact and green.
+- Phase 2 implemented: Telegram transport (`src/telegram/`, `src/db/telegram.ts`, `migrations/0002_telegram.sql`, webhook route).
+- `API-Key` remains untracked + gitignored — never read, never exposed.
+- Toolchain: Node v22.17.0, Wrangler 4.133.0, `npm run check` green.
 - Constraint: Windows 11 host; commands must be git-bash compatible.
 
 ## Global rules
@@ -66,17 +67,21 @@ Manual actions: none (local only; no deploy).
 **Objective:** Secure webhook receiving Telegram updates, user identification.
 
 Tasks:
-- [ ] Telegram client abstraction (sendMessage, etc.)
-- [ ] Webhook endpoint with secret-token verification + signature verification
-- [ ] Update parsing/validation (text messages, commands)
-- [ ] `users` table + upsert on first contact
-- [ ] Idempotency: dedupe by `update_id`
-- [ ] Safe reply path; error handling for Telegram API failures
+- [x] Telegram client abstraction (`src/telegram/client.ts`: sendMessage only, bounded retry)
+- [x] Webhook endpoint `POST /telegram/webhook` with secret-token verification (constant-time compare)
+- [x] Update parsing/validation (`src/telegram/parser.ts`: text vs unsupported vs invalid)
+- [x] `users` + `processed_updates` tables (`migrations/0002_telegram.sql`) + upsert on first contact
+- [x] Idempotency: atomic `INSERT ... ON CONFLICT DO NOTHING` claim on `update_id` PK (no SELECT-then-INSERT)
+- [x] Safe placeholder reply (`TRANSPORT_ACK_TEXT` — no fake AI); Telegram API failure handling with claim release + 500
 
-Tests: valid update, invalid/malformed update, unauthorized webhook, duplicate update, Telegram API failure.
-Security: webhook secret via env; no token in logs; user-ID as identifier not auth.
-Manual actions: create bot via BotFather, set `TELEGRAM_BOT_TOKEN` + webhook secret, register webhook (local dev via ngrok/dev-mode optional).
-**Acceptance:** bot echoes replies locally end-to-end.
+Tests: 54 webhook/client tests (auth, HTTP, validation, identity, idempotency incl. 5-way concurrent duplicates, API failure matrix, secret-leak scans) + 7 database tests (migration replay, uniqueness) + 24 Phase 1 tests intact. Total 85/85 green.
+Security: webhook secret + bot token via env only; generic error bodies; logs carry only `{event, request_id}` (test-enforced key set); numeric-ID identity; prepared statements; no retry on responses (network/timeout only, max 2 attempts).
+Deviations: none from the Phase 2 plan. `route()` became async (webhook needs env + D1); Phase 1 tests updated for `await` only.
+Known limitations: no rate limiting yet (Phase 7); `processed_updates` grows one row per unique update (cleanup deferred); unsupported updates acknowledged without user creation.
+Manual actions: create bot via BotFather, set `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WEBHOOK_SECRET` via `.dev.vars` (local) / `wrangler secret put` (remote), register webhook at `POST https://<worker>/telegram/webhook` (local dev via ngrok/dev-mode optional). See README.
+**Acceptance:** MET — transport proves end-to-end (mocked Bot API); placeholder reply sent exactly once per update.
+
+**Status: COMPLETE**
 
 ---
 

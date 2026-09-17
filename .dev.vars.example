@@ -1,1 +1,10 @@
-# Phase 1 needs no secrets. Use only development credentials in .dev.vars.dev in later phases.
+# Local development secrets (gitignored). Copy to `.dev.vars` and fill in real
+# development-only values. Never commit `.dev.vars`. Production uses
+# `wrangler secret put` (set manually by a human, never automated).
+
+# Telegram bot token from BotFather (Phase 2+). Required for the webhook reply path.
+# TELEGRAM_BOT_TOKEN=
+
+# Webhook secret sent as X-Telegram-Bot-Api-Secret-Token (Phase 2+).
+# Must match the secret_token registered via setWebhook.
+# TELEGRAM_WEBHOOK_SECRET=

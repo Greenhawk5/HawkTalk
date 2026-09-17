@@ -8,10 +8,10 @@ const url = 'https://hawktalk.test';
 
 describe('router unit', () => {
   it('returns minimal health status', async () => {
-    expect(await route(new Request(`${url}/healthz`)).json()).toEqual({ status: 'ok' });
+    expect(await (await route(new Request(`${url}/healthz`))).json()).toEqual({ status: 'ok' });
   });
-  it.each(['/healthz/', '/HEALTHZ', '/', '/admin', '/webhook'])('does not expose %s', (path) => {
-    expect(route(new Request(url + path)).status).toBe(404);
+  it.each(['/healthz/', '/HEALTHZ', '/', '/admin', '/webhook'])('does not expose %s', async (path) => {
+    expect((await route(new Request(url + path))).status).toBe(404);
   });
 });
 
@@ -58,7 +58,7 @@ describe('foundation security', () => {
   });
   it('fails closed on missing binding, without leaking request or error data', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const response = worker.fetch(new Request(`${url}/healthz?private=untrusted-input`), { APP_ENV: 'development' });
+    const response = await worker.fetch(new Request(`${url}/healthz?private=untrusted-input`), { APP_ENV: 'development' });
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'Something went wrong' });
     expect(response.headers.get('Cache-Control')).toBe('no-store');
@@ -69,7 +69,7 @@ describe('foundation security', () => {
   it('does not log raw exceptions from bindings', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const broken = { APP_ENV: 'development' as const, get DB(): D1Database { throw new Error('sensitive-diagnostic'); } };
-    const response = worker.fetch(new Request(`${url}/healthz`), broken);
+    const response = await worker.fetch(new Request(`${url}/healthz`), broken);
     expect(response.status).toBe(500);
     expect(await response.text()).not.toContain('sensitive-diagnostic');
     expect(JSON.stringify(log.mock.calls)).not.toContain('sensitive-diagnostic');

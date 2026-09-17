@@ -6,8 +6,10 @@ Security controls are implemented per phase and listed here as they land. Nothin
 
 | Threat | Control | Phase |
 |---|---|---|
-| Forged Telegram webhooks | secret-token header check + optional signature verification | 2 |
+| Forged Telegram webhooks | secret-token header check with constant-time compare; missing/empty server secret fails closed; Telegram offers no separate signature scheme | 2 |
 | Telegram credential leak | token only in Worker secret; never logged/returned | 2 |
+| Telegram reply duplicates | bounded client retry (network/timeout only, max 2 attempts); never retry after any response; claim released only on failure + 500 so redelivery reprocesses | 2 |
+| Oversized webhook payloads | 256 KiB body cap → 413; strict content-type + JSON + update_id validation | 2 |
 | Cross-user data access | user-scoped queries enforced in `db/` layer + tests | 2–5 |
 | Duplicate update double-processing | `update_id` idempotency table | 2 |
 | Provider key leak | masked display only (`sk-…9a31`); keys in secrets, never D1-plaintext/logs/UI | 4 |

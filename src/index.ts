@@ -2,12 +2,12 @@ import { validateEnv, type AppEnv } from './env';
 import { route } from './router';
 
 export default {
-  fetch(request: Request, env: Partial<AppEnv>): Response {
+  async fetch(request: Request, env: Partial<AppEnv>): Promise<Response> {
     const requestId = crypto.randomUUID();
     let response: Response;
     try {
       validateEnv(env);
-      response = route(request);
+      response = await route(request, { env, requestId });
     } catch {
       console.error(JSON.stringify({ event: 'request_failed', request_id: requestId }));
       response = Response.json({ error: 'Something went wrong' }, { status: 500 });

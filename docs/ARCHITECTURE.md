@@ -21,7 +21,11 @@ Other Cloudflare products (Queues, Vectorize, AI Gateway) are **not** adopted by
 src/
   index.ts            Worker entry: fetch handler → router
   router/             request routing, request IDs, error envelope
-  telegram/           Telegram API client + update parsing (transport only)
+  telegram/           IMPLEMENTED (Phase 2, transport only): webhook.ts (auth +
+                      validation + idempotency + placeholder reply), client.ts
+                      (sendMessage, bounded retry), parser.ts, types.ts
+  db/                 IMPLEMENTED (Phase 2): telegram.ts — user upsert +
+                      atomic update_id claim helpers (prepared statements only)
   security/           webhook auth, RBAC, rate limiting, isolation checks
   agent/              agent core: context construction, execution budget
   ai/                 AIProvider interface + router + concrete providers
@@ -30,7 +34,6 @@ src/
   quota/              quotas, usage tracking
   tasks/              reminders/workflows (Phase 9)
   admin/              admin CMS (Phase 8)
-  db/                 schema types, query helpers, migrations live in /migrations
 ```
 
 Rules:
