@@ -122,6 +122,17 @@ export class D1ConversationRepository implements ConversationRepository {
     });
   }
 
+  async getMessage(userId: number, conversationId: string, messageId: string): Promise<MessageRow | null> {
+    requireUserId(userId);
+    requireId(conversationId);
+    requireId(messageId);
+    const row = await this.db
+      .prepare('SELECT id, conversation_id, user_id, seq, role, content, created_at FROM messages WHERE id = ? AND conversation_id = ? AND user_id = ?')
+      .bind(messageId, conversationId, userId)
+      .first<Record<string, unknown>>();
+    return isMessageRow(row) ? row : null;
+  }
+
   async deleteMessage(userId: number, conversationId: string, messageId: string): Promise<boolean> {
     const conversation = await this.getConversation(userId, conversationId);
     if (conversation === null) return false;

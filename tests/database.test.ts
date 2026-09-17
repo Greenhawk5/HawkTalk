@@ -6,13 +6,13 @@ it('applies the foundation migration exactly once', async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   const rows = await env.DB.prepare('SELECT name FROM d1_migrations').all<{ name: string }>();
-  expect(rows.results).toEqual([{ name: '0001_foundation.sql' }, { name: '0002_telegram.sql' }, { name: '0003_ai_providers.sql' }, { name: '0004_conversations.sql' }]);
+  expect(rows.results).toEqual([{ name: '0001_foundation.sql' }, { name: '0002_telegram.sql' }, { name: '0003_ai_providers.sql' }, { name: '0004_conversations.sql' }, { name: '0005_phase6_orchestration.sql' }]);
 });
 
 it('creates no tables beyond the Phase 5 persistence set', async () => {
   const rows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
   expect(rows.results.map(({ name }) => name).filter((name) => !name.startsWith('sqlite_') && !name.startsWith('_cf_')).sort())
-    .toEqual(['conversations', 'd1_migrations', 'messages', 'processed_updates', 'provider_credentials', 'providers', 'users']);
+    .toEqual(['conversations', 'd1_migrations', 'default_conversations', 'messages', 'processed_updates', 'provider_credentials', 'providers', 'users']);
 });
 
 it('keeps provider configuration free of secret columns', async () => {

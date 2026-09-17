@@ -6,7 +6,14 @@ import { route } from '../src/router';
 import { sendTelegramMessage, TELEGRAM_API_BASE, TelegramSendError } from '../src/telegram/client';
 import { countProcessedUpdates, countUsersByTelegramId } from '../src/db/telegram';
 import { parseTelegramUpdate } from '../src/telegram/parser';
-import { timingSafeEqualString, TRANSPORT_ACK_TEXT } from '../src/telegram/webhook';
+import { timingSafeEqualString } from '../src/telegram/webhook';
+import { TRANSPORT_ACK_TEXT } from '../src/telegram/ack';
+import { D1ConversationOrchestrator } from '../src/orchestration/conversation-orchestrator';
+import { D1ProcessingRepository } from '../src/orchestration/processing-d1';
+import { D1ConversationRepository } from '../src/db/conversation-d1';
+import type { ConversationFlowDeps } from '../src/orchestration/service';
+import type { ConversationFlowFactory } from '../src/telegram/webhook';
+import type { ModelProvider, ProviderGenerateInput, ProviderGenerateResult } from '../src/agent/provider';
 
 const URL_BASE = 'https://hawktalk.test';
 const WEBHOOK_URL = `${URL_BASE}/telegram/webhook`;
@@ -69,7 +76,7 @@ function textUpdate(updateId: number, userId = 111, text = 'hello'): Record<stri
 
 async function callWebhook(
   req: Request,
-  opts: { telegramFetch?: FetchMock; now?: () => string; env?: Partial<AppEnv> } = {},
+  opts: { telegramFetch?: FetchMock; now?: () => string; env?: Partial<AppEnv>; flow?: ConversationFlowFactory } = {},
 ): Promise<{ response: Response; telegramFetch: FetchMock }> {
   const telegramFetch = opts.telegramFetch ?? vi.fn().mockResolvedValue(telegramOk());
   const response = await route(req, {
@@ -77,6 +84,7 @@ async function callWebhook(
     requestId: 'test-request-id',
     telegramFetch,
     now: opts.now ?? (() => FIXED_NOW),
+    ...(opts.flow !== undefined ? { flow: opts.flow } : {}),
   });
   return { response, telegramFetch };
 }
@@ -250,7 +258,7 @@ describe('update validation', () => {
     expect(parseTelegramUpdate(null)).toBeNull();
     expect(
       parseTelegramUpdate({ update_id: 3, message: { from: { id: 7 }, chat: { id: 8 }, text: 'x' } }),
-    ).toEqual({ kind: 'text_message', updateId: 3, userId: 7, chatId: 8, text: 'x', username: null, displayName: null });
+    ).toEqual({ kind: 'text_message', updateId: 3, userId: 7, chatId: 8, chatType: 'unknown', text: 'x', username: null, displayName: null });
   });
 });
 
@@ -291,7 +299,7 @@ describe('user identity', () => {
     const other = await readUser(9101);
     expect(other?.['telegram_user_id']).toBe(9101);
   });
-  it('sends the transport acknowledgement, not a fake AI reply', async () => {
+  it('sends the transport acknowledgement in transport-only mode (no flow)', async () => {
     const telegramFetch = vi.fn().mockResolvedValue(telegramOk());
     await callWebhook(webhookRequest({ body: textUpdate(1036, 9200) }), { telegramFetch });
     const { url, payload } = firstCallBody(telegramFetch);
@@ -490,6 +498,173 @@ describe('webhook security', () => {
 });
 
 // --- entrypoint wiring ----------------------------------------------------
+
+function flowProvider(): ModelProvider {
+  return {
+    id: 'fake-provider',
+    generate: vi.fn(async (input: ProviderGenerateInput): Promise<ProviderGenerateResult> => ({
+      text: `ai:${[...input.messages].reverse().find((message) => message.role === 'user')?.content ?? ''}`,
+      model: 'fake-model',
+    })),
+  };
+}
+
+function flowDeps(userId: number, provider: ModelProvider, requestId: string): ConversationFlowDeps {
+  return {
+    orchestrator: new D1ConversationOrchestrator(env.DB, new D1ConversationRepository(env.DB)),
+    processing: new D1ProcessingRepository(env.DB),
+    provider,
+    requestId,
+    agentUserId: String(userId),
+    userId,
+    model: 'router',
+    systemPrompt: 'You are HawkTalk.',
+  };
+}
+
+function withFlow(provider: ModelProvider) {
+  return (requestId: string, internalUserId: number) => flowDeps(internalUserId, provider, requestId);
+}
+
+async function messageCounts(): Promise<{ user: number; assistant: number }> {
+  const user = await env.DB.prepare("SELECT COUNT(*) AS count FROM messages WHERE role = 'user'").first<{ count: number }>();
+  const assistant = await env.DB.prepare("SELECT COUNT(*) AS count FROM messages WHERE role = 'assistant'").first<{ count: number }>();
+  return { user: user?.count ?? 0, assistant: assistant?.count ?? 0 };
+}
+
+describe('Phase 6 conversational webhook (flow mode)', () => {
+  it('runs the end-to-end flow and replies with the AI response', async () => {
+    const provider = flowProvider();
+    const telegramFetch = vi.fn().mockResolvedValue(telegramOk());
+    const { response } = await callWebhook(webhookRequest({ body: textUpdate(2001, 9601, 'hi there') }), {
+      telegramFetch,
+      flow: withFlow(provider),
+    });
+    expect(response.status).toBe(200);
+    const { payload } = firstCallBody(telegramFetch);
+    expect(payload['text']).toBe('ai:hi there');
+    expect((provider as unknown as { generate: Mock }).generate).toHaveBeenCalledTimes(1);
+    const counts = await messageCounts();
+    expect(counts.user).toBe(1);
+    expect(counts.assistant).toBe(1);
+    const record = await env.DB.prepare('SELECT processing_state FROM processed_updates WHERE update_id = 2001').first<{ processing_state: string }>();
+    expect(record?.processing_state).toBe('completed');
+  });
+
+  it('reuses the durable assistant reply on duplicate delivery without a second AI call', async () => {
+    const provider = flowProvider();
+    const telegramFetch = vi.fn().mockResolvedValue(telegramOk());
+    await callWebhook(webhookRequest({ body: textUpdate(2002, 9602, 'persist once') }), { telegramFetch, flow: withFlow(provider) });
+    expect((provider as unknown as { generate: Mock }).generate).toHaveBeenCalledTimes(1);
+    // Second delivery of the same update: claim rejects, reuse path re-delivers.
+    await callWebhook(webhookRequest({ body: textUpdate(2002, 9602, 'persist once') }), { telegramFetch, flow: withFlow(provider) });
+    expect((provider as unknown as { generate: Mock }).generate).toHaveBeenCalledTimes(1);
+    const counts = await messageCounts();
+    expect(counts.user).toBe(1);
+    expect(counts.assistant).toBe(1);
+  });
+
+  it('re-delivers the persisted reply when the first Telegram send failed after generation', async () => {
+    const provider = flowProvider();
+    // Two rejections exhaust the client's bounded retry (2 attempts); the
+    // third call is the redelivery after durable reuse.
+    const telegramFetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockResolvedValue(telegramOk());
+    const failing = await callWebhook(webhookRequest({ body: textUpdate(2003, 9603, 'send me') }), { telegramFetch, flow: withFlow(provider) });
+    expect(failing.response.status).toBe(500);
+    // Generation persisted; the claim was NOT released.
+    expect((provider as unknown as { generate: Mock }).generate).toHaveBeenCalledTimes(1);
+    expect(await countProcessedUpdates(env.DB, 2003)).toBe(1);
+    const retry = await callWebhook(webhookRequest({ body: textUpdate(2003, 9603, 'send me') }), { telegramFetch, flow: withFlow(provider) });
+    expect(retry.response.status).toBe(200);
+    // No second AI call; the durable result was reused for delivery.
+    expect((provider as unknown as { generate: Mock }).generate).toHaveBeenCalledTimes(1);
+    const counts = await messageCounts();
+    expect(counts.user).toBe(1);
+    expect(counts.assistant).toBe(1);
+  });
+
+  it('returns 500 and keeps the update non-retryable when AI generation fails', async () => {
+    const provider: ModelProvider = {
+      id: 'failing',
+      generate: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+    };
+    const telegramFetch = vi.fn().mockResolvedValue(telegramOk());
+    const failing = await callWebhook(webhookRequest({ body: textUpdate(2004, 9604, 'doomed') }), { telegramFetch, flow: withFlow(provider) });
+    expect(failing.response.status).toBe(500);
+    expect((provider as unknown as { generate: Mock }).generate).toHaveBeenCalledTimes(1);
+    const record = await env.DB.prepare('SELECT processing_state FROM processed_updates WHERE update_id = 2004').first<{ processing_state: string }>();
+    expect(record?.processing_state).toBe('failed');
+    // Redelivery acknowledges without regenerating.
+    telegramFetch.mockResolvedValue(telegramOk());
+    const retry = await callWebhook(webhookRequest({ body: textUpdate(2004, 9603, 'doomed') }), { telegramFetch, flow: withFlow(provider) });
+    expect(retry.response.status).toBe(200);
+    expect((provider as unknown as { generate: Mock }).generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('never invokes the AI for non-private chats', async () => {
+    const provider = flowProvider();
+    const telegramFetch = vi.fn().mockResolvedValue(telegramOk());
+    const groupUpdate = textUpdate(2005, 9604, 'group hello');
+    const message = groupUpdate['message'] as Record<string, unknown>;
+    message['chat'] = { id: 555, type: 'group' };
+    const { response } = await callWebhook(webhookRequest({ body: groupUpdate }), { telegramFetch, flow: withFlow(provider) });
+    expect(response.status).toBe(200);
+    expect(telegramFetch).not.toHaveBeenCalled();
+    expect((provider as unknown as { generate: Mock }).generate).not.toHaveBeenCalled();
+    expect(await countUsersByTelegramId(env.DB, 9604)).toBe(0);
+    const counts = await messageCounts();
+    expect(counts.user).toBe(0);
+  });
+
+  it('acknowledges supergroup and channel chat types without any conversational work', async () => {
+    const provider = flowProvider();
+    for (const [updateId, chatType] of [[2006, 'supergroup'], [2007, 'channel']] as const) {
+      const body = textUpdate(updateId, 9605, 'unsupported chat');
+      const message = body['message'] as Record<string, unknown>;
+      message['chat'] = { id: 777, type: chatType };
+      const telegramFetch = vi.fn().mockResolvedValue(telegramOk());
+      const { response } = await callWebhook(webhookRequest({ body }), { telegramFetch, flow: withFlow(provider) });
+      expect(response.status).toBe(200);
+      expect(telegramFetch).not.toHaveBeenCalled();
+    }
+    expect((provider as unknown as { generate: Mock }).generate).not.toHaveBeenCalled();
+  });
+
+  it('keeps messages isolated between two private-chat users', async () => {
+    const provider = flowProvider();
+    const telegramFetch = vi.fn().mockResolvedValue(telegramOk());
+    await callWebhook(webhookRequest({ body: textUpdate(2008, 9606, 'user one private') }), { telegramFetch, flow: withFlow(provider) });
+    await callWebhook(webhookRequest({ body: textUpdate(2007, 9607, 'user two private') }), { telegramFetch, flow: withFlow(provider) });
+    const rows = await env.DB.prepare('SELECT conversation_id, content FROM messages ORDER BY seq ASC').all<{ conversation_id: string }>();
+    expect(rows.results).toHaveLength(4);
+    const conversationIds = new Set(rows.results.map((row) => row.conversation_id));
+    expect(conversationIds.size).toBe(2);
+  });
+
+  it('returns 500 without leaking details when the flow fails pre-generation and releases the claim', async () => {
+    const provider = flowProvider();
+    const telegramFetch = vi.fn().mockResolvedValue(telegramOk());
+    // Force conversation resolution failure: break the orchestrator port.
+    const brokenFlow: ConversationFlowFactory = (requestId, internalUserId) => ({
+      ...flowDeps(internalUserId, provider, requestId),
+      orchestrator: {
+        resolveDefaultConversation: async () => {
+          throw new Error('d1 down');
+        },
+      } as never,
+    });
+    const failing = await callWebhook(webhookRequest({ body: textUpdate(2008, 9608, 'd1 down') }), { telegramFetch, flow: brokenFlow });
+    expect(failing.response.status).toBe(500);
+    expect((provider as unknown as { generate: Mock }).generate).not.toHaveBeenCalled();
+    // Pre-generation failure releases the claim for a clean redelivery.
+    expect(await countProcessedUpdates(env.DB, 2008)).toBe(0);
+  });
+});
 
 describe('webhook entrypoint wiring', () => {
   it('serves the webhook through the Worker with hardened headers', async () => {

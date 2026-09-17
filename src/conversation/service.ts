@@ -127,6 +127,16 @@ export class ConversationService {
     });
   }
 
+  async getMessageText(userId: unknown, conversationId: unknown, messageId: unknown): Promise<string | null> {
+    const owner = requireUserId(userId);
+    const conversation = requireId(conversationId);
+    const message = requireId(messageId);
+    return repositoryCall(async () => {
+      const row = await this.repository.getMessage(owner, conversation, message);
+      return row?.content ?? null;
+    });
+  }
+
   async deleteMessage(userId: unknown, conversationId: unknown, messageId: unknown): Promise<boolean> {
     const owner = requireUserId(userId);
     const conversation = requireId(conversationId);

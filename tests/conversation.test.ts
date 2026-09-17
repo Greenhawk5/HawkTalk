@@ -485,6 +485,12 @@ describe('Phase 5 injected fake repository integration', () => {
       return row;
     }
 
+    async getMessage(userId: number, conversationId: string, messageId: string): Promise<MessageRow | null> {
+      this.calls.push('getMessage');
+      const row = this.messages.find((message) => message.id === messageId && message.conversation_id === conversationId && message.user_id === userId);
+      return row ?? null;
+    }
+
     async deleteMessage(userId: number, conversationId: string, messageId: string): Promise<boolean> {
       this.calls.push('deleteMessage');
       const index = this.messages.findIndex((message) => message.id === messageId && message.conversation_id === conversationId && message.user_id === userId);

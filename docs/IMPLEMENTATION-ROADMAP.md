@@ -6,13 +6,14 @@ Status legend: `[ ]` Not started · `[-]` In progress · `[x]` Completed · `[!]
 
 ---
 
-## Current repository state (audited 2026-09-17, updated after Phase 5)
+## Current repository state (audited 2026-09-17, updated after Phase 6)
 
-- Git repo on `main`, baseline commit `34c2c29` + uncommitted Phase 5 implementation (uncommitted by policy).
+- Git repo on `main`, baseline `c5c9844` (Phase 5 accepted) + uncommitted Phase 6 implementation (uncommitted by policy).
 - Phase 1 foundation (Worker, `/healthz`, D1, Vitest pool, ESLint, strict TS) intact and green.
 - Phase 2 implemented: Telegram transport (`src/telegram/`, `src/db/telegram.ts`, `migrations/0002_telegram.sql`, webhook route).
 - Phase 4 implemented: AI router layer (`src/ai/`, `src/db/providers.ts`, `migrations/0003_ai_providers.sql`).
-- Phase 5 implemented: durable conversations/messages (`src/conversation/`, `src/db/conversation-*.ts`, `migrations/0004_conversations.sql`) — not yet wired into any route (no product behavior change by scope).
+- Phase 5 implemented and accepted: durable conversations/messages (`src/conversation/`, `src/db/conversation-*.ts`, `migrations/0004_conversations.sql`).
+- Phase 6 implemented (awaiting approval): application orchestration + first end-to-end conversational flow (`src/orchestration/`, `migrations/0005_phase6_orchestration.sql`): private-chat text messages run claim → internal user → default conversation → persist user message → bounded history → Agent Core → AI Router → persist assistant reply → Telegram reply, with durable per-update idempotency.
 - `API-Key` remains untracked + gitignored — never read, never exposed.
 - Toolchain: Node v22.17.0, Wrangler 4.133.0, `npm run check` green.
 - Constraint: Windows 11 host; PowerShell tooling.
@@ -156,7 +157,42 @@ Manual actions: approval, Git operations, and deployment remain human-controlled
 
 ---
 
-## PHASE 6 — Tools & Web
+## PHASE 5 — Memory
+
+**Status: COMPLETE** (accepted at `c5c9844`)
+
+---
+
+## PHASE 6 — Application Orchestration & First Conversational Flow
+
+**Objective:** Thin application/orchestration layer connecting Telegram transport, durable conversation memory, Agent Core, and the AI Router into the first complete conversational path. Private-chat text messages only. No tools, no web search, no quotas, no semantic memory.
+
+Tasks:
+- [x] Migration `0005_phase6_orchestration.sql`: extends `processed_updates` with durable processing states (`processing_state`, `conversation_id`, `assistant_message_id`) + `default_conversations` table (per-user default mapping)
+- [x] Durable idempotency state machine: `claimed → generating → completed | failed`; atomic transition prevents duplicate AI generation on redelivery
+- [x] Default conversation resolution: owner-scoped `default_conversations` mapping; creates/replaces atomically when missing or archived/deleted; never trusts Telegram chat IDs
+- [x] Private-chat-only processing: parser emits `chatType`; non-private chats acknowledged without user upsert, conversation resolution, history, AI, or persistence
+- [x] Orchestrator ports (`src/orchestration/types.ts`): `ProcessingRepository`, `ConversationOrchestrator`
+- [x] D1 implementations: `D1ProcessingRepository`, `D1ConversationOrchestrator`
+- [x] Conversational use-case (`src/orchestration/service.ts`): resolve conversation → markGenerating → persist user message → bounded history → Agent Core → AI Router → persist assistant → completed
+- [x] Redelivery reuse: `getCompletedAssistantText()` returns persisted reply for completed updates without calling AI
+- [x] Pre-generation failure handling: `conversation_failed` releases claim for clean redelivery; post-`markGenerating` failures are terminal (never regenerate)
+- [x] Production composition (`src/orchestration/production.ts`, `src/router/index.ts`): wires D1 + AI Router when `CREDENTIAL_MASTER_SECRET` is configured; falls back to transport-only mode otherwise
+- [x] Webhook integration: flow mode dispatches private chats through orchestration; transport-only mode preserves Phase 2 acknowledgement semantics
+- [x] `src/db/users.ts`: internal user lookup by Telegram ID
+- [x] `getMessage` added to `ConversationRepository` port for single-message retrieval
+
+Tests: 27 new tests covering default conversation lifecycle, concurrent resolution, end-to-end flow, history bounds, durable idempotency (concurrent delivery, AI failure terminal, redelivery reuse), router integration with sealed credentials, processing state transitions, private-chat-only enforcement, group chat rejection, pre-generation claim release, post-generation claim retention, foreign update isolation, and secret non-leakage. All prior suites intact. Total 252/252 green.
+Security: prepared statements only; ownership scoped per statement; no content logged; no credentials cross orchestration boundary; generic errors to users; constant-time webhook auth preserved; at-least-once Telegram delivery documented as unavoidable limitation.
+Known limitations: Telegram sendMessage is at-least-once externally (a timed-out send that reached Telegram may deliver twice even though generation/persistence are idempotent). Router-level failover within one invocation remains unchanged (one application call may try multiple providers). No exactly-once provider billing guarantee. No conversation-selection UI. No tools, web search, quotas, rate limiting, admin CMS, semantic memory, embeddings, reminders, or billing. Deletion timestamp touches use the database runtime clock rather than the service's injected clock. Sequence gaps from message deletion are not reused.
+Manual actions: approval, Git operations, deployment, and `wrangler secret put CREDENTIAL_MASTER_SECRET` remain human-controlled.
+**Acceptance:** Pending human approval after complete verification.
+
+**Status: WAITING FOR HUMAN APPROVAL**
+
+---
+
+## PHASE 7 — Tools & Web
 
 **Objective:** Tool registry + web_search + web_fetch with strong SSRF/injection defense.
 
@@ -172,7 +208,7 @@ Tests: malicious URL matrix (localhost, private ranges, metadata endpoint, redir
 
 ---
 
-## PHASE 7 — Quotas & Abuse Protection
+## PHASE 8 — Quotas & Abuse Protection
 
 **Objective:** Roles, quotas, rate limits, usage tracking.
 

@@ -8,6 +8,8 @@ export type ParsedTelegramUpdate =
       updateId: number;
       userId: number;
       chatId: number;
+      /** Telegram chat type ('private' | 'group' | 'supergroup' | 'channel' | unknown). */
+      chatType: string;
       text: string;
       username: string | null;
       displayName: string | null;

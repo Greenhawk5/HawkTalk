@@ -3,21 +3,21 @@
 Telegram-first personal AI assistant on Cloudflare serverless infrastructure.
 No VPS, no persistent processes.
 
-**Current state: Phase 5 — Memory (durable conversations/messages, unwired).**
+**Current state: Phase 6 — first end-to-end conversational flow (uncommitted).**
 The Worker exposes `/healthz` and a secure Telegram webhook (`POST
-/telegram/webhook`) backed by D1 (`users`, `processed_updates`). Text messages
-get a transport acknowledgement. `src/agent/` holds the provider-independent
-core (no provider is wired yet, so there are still no AI replies). Phase 5
-adds the durable persistence boundary: `conversations`/`messages` tables
-(`migrations/0004_conversations.sql`), an injected D1 repository
-(`src/db/conversation-*.ts`) and a validating service
-(`src/conversation/service.ts`) — every operation scoped by internal
-`users.id`, UUIDv4 ids, deterministic per-conversation sequence, bounded
-history (100 msgs / 20k chars / 100k total), one-way archive + cascade delete.
-Service timestamps are server-generated through an injectable `Clock`; ordering
-uses message `seq`. Unarchive and semantic/long-term memory are deferred.
-Not yet exposed via any route; no product behavior changed. Phase 5 awaits human
-approval and is uncommitted.
+/telegram/webhook`) backed by D1. Private-chat text messages now run the full
+conversational path: idempotency claim → internal user → durable default
+conversation → user message persisted → bounded history → Agent Core →
+AI Router (sealed credentials, provider failover unchanged) → assistant
+message persisted → Telegram reply. Durable per-update processing states
+(`migrations/0005_phase6_orchestration.sql`) make generation idempotent: a
+Telegram update never triggers two AI generations, and redelivery reuses the
+persisted assistant reply. Telegram delivery itself remains at-least-once.
+Group/supergroup/channel chats are acknowledged without conversational
+processing. Built on the Phase 5 memory boundary (`conversations`/`messages`,
+owner-scoped by internal `users.id`, UUIDv4 ids, `seq` ordering, bounded
+history, one-way archive) and the provider-independent core in `src/agent/`.
+Unarchive and semantic/long-term memory remain deferred.
 
 See `docs/IMPLEMENTATION-ROADMAP.md` (phase plan), `docs/ARCHITECTURE.md`,
 and `docs/SECURITY.md`.
@@ -46,8 +46,11 @@ bundle).
 2. Generate a webhook secret (any unguessable 32+ char string).
 3. Local dev: copy `.dev.vars.example` to `.dev.vars` (gitignored) and fill in
    `TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET`. Never commit real values.
-4. Remote: `wrangler secret put TELEGRAM_BOT_TOKEN` and
-   `wrangler secret put TELEGRAM_WEBHOOK_SECRET` (human only, never automated).
+4. Remote: `wrangler secret put TELEGRAM_BOT_TOKEN`,
+   `wrangler secret put TELEGRAM_WEBHOOK_SECRET`, and
+   `wrangler secret put CREDENTIAL_MASTER_SECRET` (human only, never
+   automated). The conversational flow activates only when the master secret
+   is configured; without it the webhook acknowledges in transport-only mode.
 5. Register the webhook:
    `https://api.telegram.org/bot<TOKEN>/setWebhook`
    with `url=https://<worker>/telegram/webhook` and

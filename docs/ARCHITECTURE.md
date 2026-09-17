@@ -21,14 +21,24 @@ Other Cloudflare products (Queues, Vectorize, AI Gateway) are **not** adopted by
 src/
   index.ts            Worker entry: fetch handler → router
   router/             request routing, request IDs, error envelope
-  telegram/           IMPLEMENTED (Phase 2, transport only): webhook.ts (auth +
-                      validation + idempotency + placeholder reply), client.ts
-                      (sendMessage, bounded retry), parser.ts, types.ts
-  db/                 IMPLEMENTED (Phase 2 + 4 + 5): telegram.ts — user upsert +
-                      atomic update_id claim helpers; providers.ts — provider/
-                      credential row reads; conversation-repository.ts (port),
-                      conversation-d1.ts (D1 adapter), conversation-types.ts —
-                      durable conversations/messages, every statement scoped by
+  telegram/           IMPLEMENTED (Phase 2 transport + Phase 6 flow entry):
+                      webhook.ts (auth + validation + idempotency + private-chat
+                      conversational dispatch + durable redelivery reuse),
+                      client.ts (sendMessage, bounded retry), parser.ts
+                      (incl. chatType), types.ts, ack.ts (transport-only reply)
+  orchestration/      IMPLEMENTED (Phase 6, thin application layer):
+                      service.ts (conversational use-case + durable idempotency
+                      ordering), types.ts (ports), conversation-orchestrator.ts
+                      (default conversation resolution), processing-d1.ts
+                      (durable update state machine), production.ts (AI Router
+                      composition). Coordinates components; owns no parsing,
+                      provider selection, or Telegram retry policy.
+  db/                 IMPLEMENTED (Phase 2 + 4 + 5 + 6): telegram.ts — user upsert +
+                      atomic update_id claim helpers; users.ts — internal user
+                      lookup; providers.ts — provider/credential row reads;
+                      conversation-repository.ts (port), conversation-d1.ts
+                      (D1 adapter), conversation-types.ts — durable
+                      conversations/messages, every statement scoped by
                       internal users.id, detached plain row objects
   conversation/       IMPLEMENTED (Phase 5, persistence boundary service):
                       service.ts — validation + bounds orchestration over the
@@ -41,7 +51,8 @@ src/
                       provider.ts (ModelProvider port), errors.ts (AgentError /
                       ProviderError), engine.ts (validate → normalize →
                       provider → normalize). No Telegram/D1/network/credentials.
-  ai/                 AIProvider interface + router + concrete providers
+  ai/                 IMPLEMENTED (Phase 4): credential sealing + AI Router
+                      implementing the ModelProvider port
   memory/             short/long/semantic memory engines
   tools/              tool registry + individual tools
   quota/              quotas, usage tracking
@@ -76,21 +87,42 @@ Phase 2: `users`, `processed_updates` (idempotency)
 Phase 3: no new tables (context is caller-supplied; persistence deferred to Phase 5)
 Phase 4: `providers`, `provider_credentials`
 Phase 5: `conversations`, `messages` (durable history, user-scoped; semantic memory deferred to Phase 10)
+Phase 6: `processed_updates` extended with durable processing states
+(`processing_state`, `conversation_id`, `assistant_message_id`) +
+`default_conversations` (per-user default mapping)
 Phase 7: `roles/quotas/usage/rate_limits`
 Phase 8: `agent_settings`, `prompt_versions`, `feature_flags`, `audit_logs`
 Phase 9: `tasks`
 
 Migrations in `/migrations`, applied via `wrangler d1 migrations apply`.
 
-## Request flow
+## Request flow (Phase 6 end-to-end)
 
 ```
-Telegram webhook → secret check → parse update → dedupe (update_id)
-  → upsert user → RBAC/quota/rate-limit gates
-  → agent core: build context (system prompt + history + memory)
-  → AI router → provider → reply
-  → persist message → send via Telegram client
+Telegram webhook → secret check (constant-time) → parse update (incl. chatType)
+  → atomic update_id claim (duplicate → durable-reuse path, never regenerate)
+  → unsupported / non-private chats: acknowledge, stop
+  → upsert Telegram user → resolve internal users.id
+  → conversational flow (src/orchestration):
+      resolve/create default conversation (owner-scoped, atomic)
+      → durable markGenerating (claimed → generating; the regeneration gate)
+      → persist user message
+      → load bounded history (≤20 msgs, service caps)
+      → Agent Core (validate → provider port)
+      → AI Router (provider/credential selection, failover unchanged)
+      → persist assistant message
+      → durable completed (assistant_message_id)
+  → send Telegram reply (bounded client retry)
 ```
+
+Failure map: pre-generation failures (conversation resolution) release the
+claim — redelivery reprocesses from scratch, no AI ran. After markGenerating
+succeeds, the update NEVER regenerates: AI failure → terminal `failed`
+(redelivery acknowledges); success → assistant persisted then `completed`;
+a crash between persist and complete stays `generating` — redelivery reuses
+the persisted assistant message for delivery. Telegram sendMessage is
+at-least-once externally: a timed-out send that reached Telegram can deliver
+twice; generation and persistence remain idempotent per update_id.
 
 ## Persistence boundary (Phase 5)
 

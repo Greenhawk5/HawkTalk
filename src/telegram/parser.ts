@@ -50,6 +50,7 @@ export function parseTelegramUpdate(payload: unknown): ParsedTelegramUpdate | nu
         updateId,
         userId: from['id'] as number,
         chatId: chat['id'] as number,
+        chatType: optionalText(chat['type']) ?? 'unknown',
         text,
         username: optionalText(from['username']),
         displayName,

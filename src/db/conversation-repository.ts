@@ -9,6 +9,8 @@ export interface ConversationRepository {
   deleteConversation(userId: number, conversationId: string): Promise<boolean>;
   getConversationHistory(userId: number, conversationId: string, limit: number): Promise<MessageRow[]>;
   appendMessage(userId: number, conversationId: string, input: { id: string; role: 'system' | 'user' | 'assistant'; content: string; timestamp?: string }): Promise<MessageRow | null>;
+  /** Owner-scoped single message lookup; null when absent or foreign. */
+  getMessage(userId: number, conversationId: string, messageId: string): Promise<MessageRow | null>;
   deleteMessage(userId: number, conversationId: string, messageId: string): Promise<boolean>;
 }
 
