@@ -6,13 +6,13 @@ it('applies the foundation migration exactly once', async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   const rows = await env.DB.prepare('SELECT name FROM d1_migrations').all<{ name: string }>();
-  expect(rows.results).toEqual([{ name: '0001_foundation.sql' }, { name: '0002_telegram.sql' }, { name: '0003_ai_providers.sql' }, { name: '0004_conversations.sql' }, { name: '0005_phase6_orchestration.sql' }, { name: '0006_admission.sql' }]);
+  expect(rows.results).toEqual([{ name: '0001_foundation.sql' }, { name: '0002_telegram.sql' }, { name: '0003_ai_providers.sql' }, { name: '0004_conversations.sql' }, { name: '0005_phase6_orchestration.sql' }, { name: '0006_admission.sql' }, { name: '0007_admin_cms.sql' }, { name: '0008_admin_confirmations.sql' }, { name: '0009_usage_analytics.sql' }, { name: '0010_semantic_memory.sql' }]);
 });
 
-it('creates no tables beyond the Phase 5 persistence set', async () => {
+it('creates no tables beyond the Phase 10 persistence set', async () => {
   const rows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
   expect(rows.results.map(({ name }) => name).filter((name) => !name.startsWith('sqlite_') && !name.startsWith('_cf_')).sort())
-    .toEqual(['admission_policies', 'conversations', 'd1_migrations', 'default_conversations', 'messages', 'processed_updates', 'provider_credentials', 'providers', 'request_admissions', 'users']);
+    .toEqual(['admin_audit_logs', 'admin_confirmations', 'admission_policies', 'conversations', 'd1_migrations', 'default_conversations', 'memories', 'memory_embeddings', 'messages', 'processed_updates', 'provider_credentials', 'provider_prices', 'providers', 'request_admissions', 'usage_events', 'users']);
 });
 
 it('keeps provider configuration free of secret columns', async () => {
@@ -29,22 +29,30 @@ it('keeps provider configuration free of secret columns', async () => {
 it('enforces users uniqueness on the Telegram user ID', async () => {
   await env.DB.prepare(
     "INSERT INTO users (telegram_user_id, username, display_name, status, created_at, updated_at, last_seen) VALUES (?, ?, ?, 'active', ?, ?, ?)",
-  ).bind(4242, 'dup', 'Dup', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z').run();
+  )
+    .bind(4242, 'dup', 'Dup', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+    .run();
   await expect(
     env.DB.prepare(
       "INSERT INTO users (telegram_user_id, username, display_name, status, created_at, updated_at, last_seen) VALUES (?, ?, ?, 'active', ?, ?, ?)",
-    ).bind(4242, 'dup', 'Dup', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z').run(),
+    )
+      .bind(4242, 'dup', 'Dup', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+      .run(),
   ).rejects.toThrow();
 });
 
 it('enforces processed_updates uniqueness on the Telegram update ID', async () => {
   await env.DB.prepare(
     'INSERT INTO processed_updates (update_id, telegram_user_id, kind, received_at) VALUES (?, ?, ?, ?)',
-  ).bind(777, 4242, 'text', '2026-01-01T00:00:00.000Z').run();
+  )
+    .bind(777, 4242, 'text', '2026-01-01T00:00:00.000Z')
+    .run();
   await expect(
     env.DB.prepare(
       'INSERT INTO processed_updates (update_id, telegram_user_id, kind, received_at) VALUES (?, ?, ?, ?)',
-    ).bind(777, 4242, 'text', '2026-01-01T00:00:00.000Z').run(),
+    )
+      .bind(777, 4242, 'text', '2026-01-01T00:00:00.000Z')
+      .run(),
   ).rejects.toThrow();
 });
 

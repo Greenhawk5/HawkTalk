@@ -11,6 +11,12 @@ export interface AppEnv {
   // type level so /healthz keeps working; the conversational flow is only
   // wired when it is present (transport-only acknowledgement otherwise).
   CREDENTIAL_MASTER_SECRET?: string;
+  // Phase 10: Cloudflare Workers AI binding for semantic-memory embeddings.
+  // Optional: when absent, semantic memory is disabled (fail-closed).
+  AI?: Ai;
+  // Phase 10: Cloudflare Vectorize index binding for semantic-memory vector search.
+  // Optional: when absent, semantic memory is disabled (fail-closed).
+  VECTORIZE?: VectorizeIndex;
 }
 
 export function validateEnv(env: Partial<AppEnv>): asserts env is AppEnv {

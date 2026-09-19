@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
+  <title id="title">HawkTalk banner placeholder</title>
+  <desc id="desc">Reserved visual asset location for a future HawkTalk project banner.</desc>
+  <rect width="1200" height="280" rx="24" fill="#111827"/>
+  <text x="600" y="130" text-anchor="middle" fill="#f9fafb" font-family="Arial, sans-serif" font-size="52" font-weight="700">HawkTalk</text>
+  <text x="600" y="180" text-anchor="middle" fill="#93c5fd" font-family="Arial, sans-serif" font-size="22">Future project banner asset</text>
+</svg>

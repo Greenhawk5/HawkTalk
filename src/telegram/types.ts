@@ -15,6 +15,17 @@ export type ParsedTelegramUpdate =
       displayName: string | null;
     }
   | {
+      kind: 'admin_callback';
+      updateId: number;
+      /** Bot API callback query id (for answerCallbackQuery). */
+      callbackQueryId: string;
+      userId: number;
+      chatId: number;
+      chatType: string;
+      /** Raw untrusted callback payload; validated later by the admin UI grammar. */
+      data: string;
+    }
+  | {
       kind: 'unsupported';
       updateId: number;
     };

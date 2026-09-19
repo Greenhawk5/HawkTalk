@@ -281,4 +281,24 @@ Tests: schedule/retry/duplicate tests with fake time.
 
 Justified features only, decided at phase start: smart model routing (FAST/DEFAULT/COMPLEX/RESEARCH), research mode, semantic memory (embeddings + vectorize), cost analytics, multimodal/voice, additional tools, prompt versioning UI.
 
+### Phase 10 scope decision (recorded at phase start)
+
+This section records which listed items were selected for this phase and which were deferred, so the scope is auditable rather than implied.
+
+**Implemented in this phase (justified):**
+- [x] Smart model routing (FAST / DEFAULT / COMPLEX / RESEARCH) over the existing `AIRouter` (`src/ai/routing-profiles.ts`). Profiles only rewrite the opaque `model` string; the router keeps exclusive ownership of provider/credential selection, and explicit `provider:model` selections pass through unchanged. Provider metadata for resolution crosses an explicit `ProviderDirectorySnapshot` port (id/enabled/weight only — never credentials or base URLs).
+- [x] Research mode: explicit user intent via `/research <question>` (also `/fast` and `/smart`), parsed by `src/telegram/user-commands.ts`, bound to the flow as a routing profile and executed through the existing bounded tool loop with the read-only web tool allowlist (`web_search`, `web_fetch`) only. Tool Registry, SSRF guard, tool-result bounds, and untrusted-result wrapping are unchanged and remain authoritative.
+- [x] Cost analytics: durable `usage_events` ledger (migration `0009_usage_analytics.sql`) recording exactly one row per successful production generation, with server-computed microdollar estimates from `provider_prices`; OWNER-only fleet visibility and price editing through the existing AdminService capability matrix (audited, no secrets stored).
+- [ ] **Semantic memory — REMEDIATION PENDING.** Only a foundation exists today: `src/memory/service.ts` provides a deterministic local embedder, owner-scoped recall, and bounded untrusted context rendering, backed by an in-memory store. It is **not** complete for this phase: there is no durable D1/Vectorize persistence, no production write path, and no recall hook installed in `productionFlow`. Embeddings + vectorize remain open Phase 10 work.
+
+**Deferred (not part of this phase):**
+- Multimodal
+- Voice
+- Additional tools beyond the existing justified tool set (`web_search`, `web_fetch`)
+- Prompt versioning UI
+
+Deferrals follow the roadmap's "justified features only" rule: each was judged not justified for this phase. The deferred items are not partially implemented and introduce no conflicting interfaces.
+
+**Acceptance for this phase (so far):** `/fast`, `/smart`, and `/research` command text produces a real profile-selected generation through `productionFlow` → Agent Core → Router; the resolved profile measurably changes which provider receives the call; one idempotent usage row is recorded per successful generation; usage/price administration remains OWNER-only. Semantic memory must reach durable persistence and production wiring before this phase is declared complete.
+
 ---

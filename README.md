@@ -1,59 +1,114 @@
-# HawkTalk Agent
+# HawkTalk
 
-Telegram-first personal AI assistant on Cloudflare serverless infrastructure.
-No VPS, no persistent processes.
+**A Telegram-first, provider-independent AI assistant running on Cloudflare Workers.**
 
-**Current state: Phase 8 — Quotas & Abuse Protection (uncommitted; Phase 7 committed as `ea00364`).**
-Phase 8 adds durable, role-aware usage limits at the orchestration boundary:
-server-side roles (OWNER/ADMIN/VIP/USER/BLOCKED, default USER), role-keyed
-`admission_policies` (daily quota, per-second/hour rate windows, per-mechanism
-bypass flags), and an atomic update-keyed admission ledger (`request_admissions`)
-enforced before any conversation work — a rejected request never touches the
-default conversation, Agent Core, AI Router, tools, or providers. Rejections use
-fixed application-layer texts. Redelivery of the same Telegram update reuses the
-durable admission decision and can never double-charge quota. All prior phases
-(1–7) remain intact and green.
+<!-- Future asset: replace this intentional placeholder with `docs/assets/README/banner.png`. -->
+![HawkTalk banner placeholder](docs/assets/README/banner-placeholder.svg)
 
-See `docs/IMPLEMENTATION-ROADMAP.md` (phase plan), `docs/ARCHITECTURE.md`,
-and `docs/SECURITY.md`.
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![Vitest](https://img.shields.io/badge/tests-Vitest-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
+
+> **Project status:** active development. No public release or CI status is asserted here.
+
+## Overview
+
+HawkTalk receives Telegram updates, admits valid private-chat traffic, routes requests through a provider-neutral Agent Core, and persists state in Cloudflare D1. Transport, security, orchestration, model providers, tools, memory, and persistence are deliberately separated and independently testable.
+
+## Implemented capabilities
+
+- Telegram webhook authentication, bounded parsing, private-chat restrictions, and durable update idempotency.
+- Provider-independent Agent Core and an OpenAI-compatible multi-provider router with weighted selection, bounded attempts, cooldowns, and encrypted credentials.
+- Owner-scoped conversations and messages in D1.
+- Read-only `web_search` and `web_fetch` tools with strict parsing, bounds, sanitization, SSRF defenses, and untrusted-result delimiters.
+- Role-aware quotas, rate limits, abuse protection, Telegram-native RBAC/admin operations, confirmations, and audit logging.
+- Research mode, usage/cost recording, explicit memory commands, and semantic memory using Workers AI `@cf/baai/bge-m3` plus Vectorize.
+
+## Stack
+
+| Area | Technology | Status |
+| --- | --- | --- |
+| Runtime | Cloudflare Workers + TypeScript | Implemented |
+| Relational persistence | Cloudflare D1 / SQLite | Implemented |
+| Embeddings | Workers AI, `@cf/baai/bge-m3` | Implemented for semantic memory |
+| Vector search | Cloudflare Vectorize | Implemented for semantic memory |
+| Messaging | Telegram Bot API | Implemented |
+| Testing | Vitest, Cloudflare Workers pool | Implemented |
+| Durable Objects, R2, Tasks/Workflows | — | Not currently used; future candidates |
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+  T[Telegram] --> W[Webhook admission]
+  W --> R[Routing and idempotency]
+  R --> A[Quota / RBAC / orchestration]
+  A --> C[Conversation + Agent Core]
+  C --> P[AI Router and providers]
+  C --> U[Research tools]
+  C --> M[Semantic memory]
+  P --> D[(D1)]
+  M --> D
+  M --> V[(Vectorize)]
+  M --> I[Workers AI]
+```
+
+The rendered architecture illustration slot is reserved at `docs/assets/README/architecture.png`.
+
+## Screenshots and gallery
+
+Visual assets are intentionally not fabricated. Add future captures under `docs/assets/screenshots/`:
+
+| Slot | Reserved path |
+| --- | --- |
+| Telegram conversation | `telegram-chat.png` |
+| Admin interface | `admin.png` |
+| Research flow | `research.png` |
+| Memory interaction | `memory.png` |
+| Architecture | `architecture.png` |
+
+## Quick start
+
+Requires Node.js `>=22.13.0 <23`, npm, and Wrangler.
+
+```bash
+npm install
+npm run db:migrate:local
+npm run dev
+```
+
+Copy `.dev.vars.example` to `.dev.vars` for local Telegram secrets. The file is ignored and must never contain committed values.
 
 ## Commands
 
 ```bash
-npm test            # vitest (Workers pool + local D1)
-npm run typecheck   # wrangler types + tsc (app + tests)
-npm run lint        # eslint, zero warnings
-npm run build       # wrangler dry-run build into dist/
-npm run security    # npm audit --audit-level=low
-npm run check       # all of the above in order
-npm run dev         # wrangler dev --env dev --local
-npm run db:migrate:local  # apply migrations/ to local D1
+npm test                 # Vitest suite
+npm run typecheck        # generated Wrangler types + TypeScript
+npm run lint             # ESLint, zero warnings
+npm run build            # Wrangler dry-run build
+npm run security         # npm audit
+npm run check            # all validation commands
 ```
 
-Install note: the repo's npm 11.4.2 hits an arborist bug — use
-`npx npm@11.19.1 install`. Do not touch the `sharp` override without a
-concrete reason (dev-only miniflare transitive dependency, not in the Worker
-bundle).
+## Documentation map
 
-## Telegram setup (manual, Phase 2)
+- [Architecture](ARCHITECTURE.md) — layers, request flow, and service boundaries.
+- [Development](DEVELOPMENT.md) — local setup, migrations, providers, tools, and memory.
+- [Testing](TESTING.md) — test organization and validation expectations.
+- [Deployment](DEPLOYMENT.md) — deployment entry point and operational runbooks.
+- [Security](SECURITY.md) — implemented controls and operational responsibilities.
+- [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md) · [Changelog](CHANGELOG.md)
+- [Implementation roadmap](docs/IMPLEMENTATION-ROADMAP.md) — phase history and future scope.
+- [Detailed deployment runbook](docs/DEPLOYMENT-RUNBOOK.md) · [smoke tests](docs/SMOKE-TESTS.md) · [rollback](docs/ROLLBACK.md)
 
-1. Create a bot via BotFather; keep the token secret.
-2. Generate a webhook secret (any unguessable 32+ char string).
-3. Local dev: copy `.dev.vars.example` to `.dev.vars` (gitignored) and fill in
-   `TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET`. Never commit real values.
-4. Remote: `wrangler secret put TELEGRAM_BOT_TOKEN`,
-   `wrangler secret put TELEGRAM_WEBHOOK_SECRET`, and
-   `wrangler secret put CREDENTIAL_MASTER_SECRET` (human only, never
-   automated). The conversational flow activates only when the master secret
-   is configured; without it the webhook acknowledges in transport-only mode.
-5. Register the webhook:
-   `https://api.telegram.org/bot<TOKEN>/setWebhook`
-   with `url=https://<worker>/telegram/webhook` and
-   `secret_token=<WEBHOOK_SECRET>`.
+## Database and migrations
 
-## Rules
+Ordered SQL migrations live in [`migrations/`](migrations/). Apply them locally with `npm run db:migrate:local`; remote migration application is human-controlled and documented in [DEPLOYMENT.md](DEPLOYMENT.md).
 
-- No commits, pushes, tags, or deploys without explicit human instruction.
-- One phase at a time; each phase ends with tests + security review + report.
-- The `API-Key` file at the repo root is gitignored and must never be read
-  into code, docs, or logs.
+## Security and support
+
+Read [SECURITY.md](SECURITY.md) before handling secrets, webhook configuration, provider credentials, or production data. This checkout has no configured public support URL or maintainer contact channel.
+
+## License
+
+No `LICENSE` file is present in this repository. Licensing terms should be supplied by the project owner before publishing a license badge or release metadata.

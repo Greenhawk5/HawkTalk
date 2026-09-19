@@ -1,8 +1,12 @@
 import { admissionReply, type AdmissionDecision, type AdmissionGate } from './admission';
 import { runAgent } from '../agent/engine';
 import type { ModelProvider } from '../agent/provider';
-import type { AgentRequest } from '../agent/types';
-import { MAX_SYSTEM_PROMPT_CHARS } from '../agent/types';
+import type { AgentRequest, AgentResponse } from '../agent/types';
+import { MAX_SYSTEM_PROMPT_CHARS, DEFAULT_OUTPUT_TOKENS } from '../agent/types';
+import { runAgentWithTools } from '../tools/agent-loop';
+import { ToolRegistry } from '../tools/registry';
+import { resolveRoutingProfile, researchToolNames } from '../ai/routing-profiles';
+import type { ProviderDirectorySnapshot } from './production';
 import type { ConversationOrchestrator, ProcessingRepository } from './types';
 
 // Conversational use-case (Phase 6): one claimed Telegram text update →
@@ -66,7 +70,32 @@ export interface ConversationFlowDeps {
   model: string;
   /** Application system prompt; the Agent Core bounds it (≤8k chars). */
   systemPrompt: string;
+  /** Smart-routing profile override; DEFAULT when omitted. */
+  routingProfile?: unknown;
+  /** Records successful generations for cost analytics; absent in tests. */
+  usageRecorder?: UsageRecorder;
+  /** Semantic-memory recall hook; absent when memory is disabled. */
+  memoryRecall?: MemoryRecallHook;
+  /** Optional research-mode web tool registry (read-only web tools only). */
+  researchTools?: { names: readonly string[]; executor: ToolExecutor } | undefined;
+  /**
+   * Non-secret provider-directory snapshot for routing-profile resolution.
+   * When present, profiles resolve against the same directory the router
+   * uses; when absent, profiles fall back to router-default semantics.
+   */
+  directorySnapshot?: ProviderDirectorySnapshot | undefined;
 }
+
+/** Owner-scoped sink for one successful generation's provider-reported usage. */
+export interface UsageRecorder {
+  record(input: { providerId: string; vendorModel: string; requestId: string; inputTokens: number; outputTokens: number }): Promise<void>;
+}
+
+/** Owner-scoped semantic-memory recall hook. Returns bounded context text. */
+export type MemoryRecallHook = (query: string) => Promise<string>;
+
+/** Bounded executor for research-mode web tools (registry-namespaced). */
+export type ToolExecutor = (name: string, input: unknown) => Promise<{ kind: string; content: string }>;
 
 export interface ConversationFlowResult {
   state: 'completed' | 'reused' | 'rejected';
@@ -118,14 +147,51 @@ export async function handleUserTextMessage(
     throw new ConversationFlowError('history_failed');
   });
 
+  // Phase 10: optional in-flow enhancements, each independently absent-safe.
+  // Routing profiles only rewrite `model` for the provider port; the router
+  // resolves it with identical semantics. Memory context is bounded,
+  // untrusted-delimited data. Research web tools come from the read-only
+  // allowlist and execute through the bounded tool registry.
+  const providers = await listProvidersForRouting(deps).catch(() => [] as Array<{ id: string; enabled: boolean; weight: number }>);
+  const routing = resolveRoutingProfile(deps.routingProfile, { model: deps.model, providers });
+  const memoryBlock = deps.memoryRecall === undefined ? '' : await deps.memoryRecall(text).catch(() => '');
+  const toolMessages = memoryBlock.length === 0 ? history : [...history.slice(0, -1), { role: history[history.length - 1]?.role ?? 'user' as const, content: `${history[history.length - 1]?.content ?? text}\n\n${memoryBlock}` }];
   let assistantText: string;
+  let agentResponse: AgentResponse | null = null;
   try {
-    const response = await runAgent(buildAgentRequest(deps, history), deps.provider);
-    assistantText = response.text;
+    if (routing.enableWebTools && deps.researchTools !== undefined) {
+      const registry = new ToolRegistry();
+      for (const name of researchToolNames(deps.researchTools.names)) {
+        registry.register({ name, description: `${name} (research mode)`, inputSchema: {}, execute: (input) => deps.researchTools?.executor(name, input).then((result) => ({ kind: 'success' as const, content: result.content })) ?? Promise.resolve({ kind: 'upstream_error' as const, content: `${name} unavailable` }) });
+      }
+      assistantText = await runAgentWithTools(toolMessages, {
+        provider: deps.provider,
+        registry,
+        requestId: deps.requestId,
+        agentUserId: deps.agentUserId,
+        model: routing.model,
+        systemPrompt: deps.systemPrompt,
+      });
+    } else {
+      agentResponse = await runAgent(buildAgentRequest(deps, toolMessages, routing), deps.provider);
+      assistantText = agentResponse.text;
+    }
   } catch {
     // Terminal failure: the update never regenerates (approved policy).
     await processing.markFailed(updateId).catch(() => undefined);
     throw new ConversationFlowError('agent_failed');
+  }
+  if (deps.usageRecorder !== undefined) {
+    const usage = extractAgentUsage(agentResponse);
+    if (usage !== null) {
+      await deps.usageRecorder.record({
+        providerId: usage.providerId,
+        vendorModel: usage.vendorModel,
+        requestId: deps.requestId,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+      }).catch(() => undefined);
+    }
   }
 
   const assistant = await orchestrator.appendMessage(deps.userId, conversation.id, { role: 'assistant', content: assistantText }).catch(() => {
@@ -138,16 +204,64 @@ export async function handleUserTextMessage(
   return { state: 'completed', assistantText };
 }
 
-function buildAgentRequest(deps: ConversationFlowDeps, history: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): AgentRequest {
+function buildAgentRequest(
+  deps: ConversationFlowDeps,
+  history: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  routing?: { model: string; outputMultiplier: 1 | 2 },
+): AgentRequest {
   return {
     requestId: deps.requestId,
     userId: deps.agentUserId,
     messages: history,
     config: {
       systemPrompt: deps.systemPrompt.slice(0, MAX_SYSTEM_PROMPT_CHARS),
-      model: deps.model,
+      model: routing?.model ?? deps.model,
+      maxOutputTokens: routing?.outputMultiplier === 2 ? DEFAULT_OUTPUT_TOKENS * 2 : undefined,
     },
   };
+}
+
+/**
+ * Best-effort provider listing for routing-profile resolution over the
+ * explicit ProviderDirectorySnapshot port. Failures yield an empty list
+ * (profiles then fall back to router semantics). The snapshot carries only
+ * id/enabled/weight — no credentials, base URLs, or secrets — and malformed
+ * rows are dropped, never trusted.
+ */
+async function listProvidersForRouting(deps: ConversationFlowDeps): Promise<Array<{ id: string; enabled: boolean; weight: number }>> {
+  const snapshot = deps.directorySnapshot;
+  if (snapshot === undefined) return [];
+  const entries = await snapshot.listRoutingProviders().catch(() => [] as ReadonlyArray<{ id: string; enabled: boolean; weight: number }>);
+  if (!Array.isArray(entries)) return [];
+  const out: Array<{ id: string; enabled: boolean; weight: number }> = [];
+  for (const entry of entries) {
+    if (typeof entry.id !== 'string' || !/^[a-z0-9-]{1,64}$/.test(entry.id)) continue;
+    out.push({
+      id: entry.id,
+      enabled: entry.enabled === true,
+      weight: typeof entry.weight === 'number' && Number.isSafeInteger(entry.weight) ? entry.weight : 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * Extracts provider-reported usage from a successful response only. Research
+ * mode's tool loop summarizes many calls into one final text with no single
+ * attribution, so its usage is deliberately not recorded (fail closed rather
+ * than misattribute).
+ */
+function extractAgentUsage(response: AgentResponse | null): { providerId: string; vendorModel: string; inputTokens: number; outputTokens: number } | null {
+  if (response === null || response === undefined) return null;
+  const usage = response.usage;
+  if (usage === undefined) return null;
+  const inputTokens = usage.inputTokens ?? 0;
+  const outputTokens = usage.outputTokens ?? 0;
+  if (!Number.isSafeInteger(inputTokens) || inputTokens < 0 || !Number.isSafeInteger(outputTokens) || outputTokens < 0) return null;
+  const separator = response.model.indexOf(':');
+  const providerId = separator > 0 ? response.model.slice(0, separator) : 'unknown';
+  if (!/^[a-z0-9-]{1,64}$/.test(providerId)) return null;
+  return { providerId, vendorModel: response.model.slice(0, 128), inputTokens, outputTokens };
 }
 
 /**

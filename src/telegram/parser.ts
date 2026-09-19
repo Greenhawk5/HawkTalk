@@ -58,5 +58,42 @@ export function parseTelegramUpdate(payload: unknown): ParsedTelegramUpdate | nu
     }
   }
 
+  // Phase 9: inline-keyboard callback queries. Bounded extraction only; the
+  // untrusted `data` string is validated against the admin callback grammar
+  // later (parseAdminCallback). Structurally invalid callbacks fall through
+  // to 'unsupported' so they are acknowledged, never rejected with 400.
+  const callbackQuery = payload['callback_query'];
+  if (isRecord(callbackQuery)) {
+    const from = callbackQuery['from'];
+    const message = callbackQuery['message'];
+    const data = callbackQuery['data'];
+    if (
+      isRecord(from) &&
+      typeof from['id'] === 'number' &&
+      Number.isInteger(from['id']) &&
+      (from['id'] as number) > 0 &&
+      isRecord(message) &&
+      isRecord(message['chat']) &&
+      typeof message['chat']['id'] === 'number' &&
+      Number.isInteger(message['chat']['id'] as number) &&
+      typeof data === 'string' &&
+      data.length > 0 &&
+      data.length <= 64 &&
+      typeof callbackQuery['id'] === 'string' &&
+      (callbackQuery['id'] as string).length > 0 &&
+      (callbackQuery['id'] as string).length <= 128
+    ) {
+      return {
+        kind: 'admin_callback',
+        updateId,
+        callbackQueryId: callbackQuery['id'] as string,
+        userId: from['id'] as number,
+        chatId: message['chat']['id'] as number,
+        chatType: optionalText(message['chat']['type']) ?? 'unknown',
+        data,
+      };
+    }
+  }
+
   return { kind: 'unsupported', updateId };
 }
