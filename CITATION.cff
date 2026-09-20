@@ -2,22 +2,26 @@ cff-version: 1.2.0
 title: "HawkTalk"
 message: "If you use HawkTalk in academic, educational, research, or derivative work, please cite this project."
 type: software
-authors:
 
-* family-names: "Faniani"
-  given-names: "Ali"
-  affiliation: "Independent"
-  repository-code: "https://github.com/Greenhawk5/HawkTalk"
-  url: "https://github.com/Greenhawk5/HawkTalk"
-  abstract: "A Telegram-first, provider-independent AI assistant running on Cloudflare Workers."
-  keywords:
-* AI assistant
-* Telegram bot
-* Cloudflare Workers
-* Cloudflare D1
-* Vectorize
-* TypeScript
-* agent
-  license: "MIT"
-  version: "1.0.0-rc.1"
-  date-released: 2026-09-20
+authors:
+  - family-names: "Faniani"
+    given-names: "Ali"
+    affiliation: "Independent"
+
+repository-code: "https://github.com/Greenhawk5/HawkTalk"
+url: "https://github.com/Greenhawk5/HawkTalk"
+
+abstract: "A Telegram-first, provider-independent AI assistant running on Cloudflare Workers."
+
+keywords:
+  - "AI assistant"
+  - "Telegram bot"
+  - "Cloudflare Workers"
+  - "Cloudflare D1"
+  - "Vectorize"
+  - "TypeScript"
+  - "agent"
+
+license: "MIT"
+version: "1.0.0-rc.1"
+date-released: 2026-09-20
