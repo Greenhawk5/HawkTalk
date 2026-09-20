@@ -6,9 +6,9 @@ export interface AdmissionGate {
 
 export function admissionReply(decision: Exclude<AdmissionDecision, 'allowed'>): string {
   switch (decision) {
-    case 'quota_exceeded': return 'Your message allowance has been reached. Please try again tomorrow.';
-    case 'rate_limited': return 'Please slow down and try again later.';
-    case 'blocked': return 'This account cannot use the assistant.';
-    case 'unavailable': return 'The assistant is temporarily unavailable. Please try again later.';
+    case 'quota_exceeded': return '📊 You’ve reached today’s message allowance — it resets tomorrow. See you then! 🌙';
+    case 'rate_limited': return 'Easy there 🙂 Give me a beat and try again in a moment.';
+    case 'blocked': return 'This account can’t use the assistant right now. If that looks wrong, contact the team.';
+    case 'unavailable': return 'I’m briefly unavailable — please try again in a minute.';
   }
 }

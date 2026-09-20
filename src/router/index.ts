@@ -6,6 +6,8 @@ import { D1ConversationOrchestrator } from '../orchestration/conversation-orches
 import { D1ProcessingRepository } from '../orchestration/processing-d1';
 import { D1ConversationRepository } from '../db/conversation-d1';
 import { buildProductionProvider, buildProductionResearchTools, buildProductionUsageRecorder, D1ProviderDirectorySnapshot, buildProductionMemoryRecall } from '../orchestration/production';
+import { withHawkTalkIdentity } from '../orchestration/identity';
+import { MAX_SYSTEM_PROMPT_CHARS } from '../agent/types';
 import { D1ProviderDirectory } from '../ai/router';
 import type { ConversationFlowDeps } from '../orchestration/service';
 import { AdminService } from '../admin/service';
@@ -38,7 +40,10 @@ export function productionFlow(env: Partial<AppEnv>): ConversationFlowFactory | 
       agentUserId: String(internalUserId),
       userId: internalUserId,
       model: 'router',
-      systemPrompt: '',
+      // Stable HawkTalk assistant identity + security policy (provider-
+      // agnostic; survives failover). Previously an empty string, which let
+      // the underlying model self-identify in conversation.
+      systemPrompt: withHawkTalkIdentity('', MAX_SYSTEM_PROMPT_CHARS),
       directorySnapshot,
       usageRecorder: buildProductionUsageRecorder(db, internalUserId, requestId, () => new Date().toISOString()),
       researchTools,
@@ -57,6 +62,13 @@ export interface RouteContext {
   now?: () => string;
   /** Conversational flow factory (Phase 6); production composes D1 + AI Router. */
   flow?: ConversationFlowFactory;
+  /**
+   * Background execution (Cloudflare waitUntil). When provided, the Telegram
+   * webhook acknowledges Telegram immediately after the durable claim and the
+   * conversational flow continues under waitUntil; when absent the flow runs
+   * synchronously (legacy behavior, used by tests and non-worker callers).
+   */
+  waitUntil?: (promise: Promise<unknown>) => void;
   /** Phase 9 admin CMS. Production composes it from D1 when available. */
   adminService?: AdminService;
 }
@@ -92,6 +104,7 @@ export async function route(request: Request, ctx?: RouteContext): Promise<Respo
       now: ctx.now,
       flow: ctx.flow ?? productionFlow(ctx.env),
       adminService,
+      waitUntil: ctx.waitUntil,
     });
   }
   return Response.json({ error: 'Not found' }, { status: 404 });

@@ -6,13 +6,13 @@ it('applies the foundation migration exactly once', async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   const rows = await env.DB.prepare('SELECT name FROM d1_migrations').all<{ name: string }>();
-  expect(rows.results).toEqual([{ name: '0001_foundation.sql' }, { name: '0002_telegram.sql' }, { name: '0003_ai_providers.sql' }, { name: '0004_conversations.sql' }, { name: '0005_phase6_orchestration.sql' }, { name: '0006_admission.sql' }, { name: '0007_admin_cms.sql' }, { name: '0008_admin_confirmations.sql' }, { name: '0009_usage_analytics.sql' }, { name: '0010_semantic_memory.sql' }]);
+  expect(rows.results).toEqual([{ name: '0001_foundation.sql' }, { name: '0002_telegram.sql' }, { name: '0003_ai_providers.sql' }, { name: '0004_conversations.sql' }, { name: '0005_phase6_orchestration.sql' }, { name: '0006_admission.sql' }, { name: '0007_admin_cms.sql' }, { name: '0008_admin_confirmations.sql' }, { name: '0009_usage_analytics.sql' }, { name: '0010_semantic_memory.sql' }, { name: '0011_admin_panel_sessions.sql' }]);
 });
 
 it('creates no tables beyond the Phase 10 persistence set', async () => {
   const rows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
   expect(rows.results.map(({ name }) => name).filter((name) => !name.startsWith('sqlite_') && !name.startsWith('_cf_')).sort())
-    .toEqual(['admin_audit_logs', 'admin_confirmations', 'admission_policies', 'conversations', 'd1_migrations', 'default_conversations', 'memories', 'memory_embeddings', 'messages', 'processed_updates', 'provider_credentials', 'provider_prices', 'providers', 'request_admissions', 'usage_events', 'users']);
+    .toEqual(['admin_audit_logs', 'admin_confirmations', 'admin_panel_sessions', 'admission_policies', 'conversations', 'd1_migrations', 'default_conversations', 'memories', 'memory_embeddings', 'messages', 'processed_updates', 'provider_credentials', 'provider_prices', 'providers', 'request_admissions', 'usage_events', 'users']);
 });
 
 it('keeps provider configuration free of secret columns', async () => {

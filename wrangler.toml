@@ -13,6 +13,9 @@ local_protocol = "http"
 [observability]
 enabled = false
 
+[triggers]
+crons = ["* * * * *"]
+
 # ============================================================
 # Development
 # ============================================================
@@ -22,6 +25,9 @@ name = "hawktalk-agent-dev"
 
 [env.dev.vars]
 APP_ENV = "development"
+
+[env.dev.triggers]
+crons = ["* * * * *"]
 
 [[env.dev.d1_databases]]
 binding = "DB"
@@ -68,3 +74,6 @@ index_name = "hawktalk-memories"
 
 [env.production.vars]
 APP_ENV = "production"
+
+[env.production.triggers]
+crons = ["* * * * *"]

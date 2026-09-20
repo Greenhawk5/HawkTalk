@@ -3,6 +3,9 @@
 // rules — it resolves the internal actor, parses bounded callback data, calls
 // AdminService (which re-authorizes every operation), and maps results/errors
 // to bounded plain-text views or safe callback answers.
+//
+// Panel delivery (same-message editing, Close, expiry) is owned by the
+// webhook layer; 'close' outcomes are produced here but executed there.
 
 import type { AdminRole } from '../admin/types';
 import type { AdminService } from '../admin/service';
@@ -32,10 +35,11 @@ import { findInternalUserIdByTelegramId } from '../db/users';
 export const ADMIN_ACCESS_DENIED_TEXT = 'You are not authorized to use admin commands.';
 export const GENERIC_ADMIN_FAILURE_TEXT = 'The admin service is temporarily unavailable. Try again later.';
 
-/** Either a full view to send as a message, or a short bounded answer text. */
+/** Either a full view to edit the panel message with, a short bounded answer, or a panel close. */
 export type AdminOutcome =
   | { kind: 'view'; view: AdminView }
-  | { kind: 'answer'; text: string };
+  | { kind: 'answer'; text: string }
+  | { kind: 'close' };
 
 function errorOutcome(error: unknown): { kind: 'answer'; text: string } {
   if (error instanceof AdminError) return { kind: 'answer', text: adminErrorText(error.kind) };
@@ -59,6 +63,9 @@ async function executeAdminCallback(adminService: AdminService, actorUserId: num
   switch (cb.action) {
     case 'menu':
       return { kind: 'view', view: renderMenu() };
+    case 'close':
+      // Executed by the webhook layer (deleteMessage + session cleanup).
+      return { kind: 'close' };
     case 'dashboard':
       return { kind: 'view', view: renderDashboard(await adminService.getDashboard(actorUserId)) };
     case 'users': {

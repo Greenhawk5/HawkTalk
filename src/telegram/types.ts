@@ -21,6 +21,12 @@ export type ParsedTelegramUpdate =
       callbackQueryId: string;
       userId: number;
       chatId: number;
+      /**
+       * The panel message this callback belongs to. -1 when Telegram did not
+       * supply a usable message id; such callbacks cannot match a live panel
+       * session and are rejected (fail closed).
+       */
+      messageId: number;
       chatType: string;
       /** Raw untrusted callback payload; validated later by the admin UI grammar. */
       data: string;

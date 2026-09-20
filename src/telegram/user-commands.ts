@@ -40,4 +40,4 @@ export function parseUserCommand(text: string): UserModeCommand | null {
 }
 
 export const MODE_COMMAND_USAGE_HINT =
-  'Usage: /fast <question>, /smart <question>, or /research <question>. Send the command with your question to use that routing profile.';
+  '⚡ Quick tip: send a mode together with your question.\n\n/fast <question> — quick answer\n/smart <question> — deeper reasoning\n/research <question> — web research';

@@ -32,13 +32,13 @@ function textRequest(updateId: number, userId: number, chatType: string, text: s
   });
 }
 
-function callbackRequest(updateId: number, userId: number, data: string, chatType = 'private'): Request {
+function callbackRequest(updateId: number, userId: number, data: string, chatType = 'private', messageId = 5): Request {
   return new Request(WEBHOOK_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET },
     body: JSON.stringify({
       update_id: updateId,
-      callback_query: { id: `cbq${updateId}`, from: { id: userId, is_bot: false, first_name: 'A' }, message: { message_id: 5, chat: { id: userId, type: chatType } }, data },
+      callback_query: { id: `cbq${updateId}`, from: { id: userId, is_bot: false, first_name: 'A' }, message: { message_id: messageId, chat: { id: userId, type: chatType } }, data },
     }),
   });
 }
@@ -137,25 +137,35 @@ describe('Phase 9 admin callback security', () => {
     }
   });
 
-  it('executes authorized callbacks server-side regardless of button text', async () => {
+  it('executes authorized callbacks server-side against the live panel message', async () => {
     const adminSvc = new AdminService(env.DB, () => FIXED_NOW);
     await seedUser(6007, 'ADMIN');
-    const { telegramFetch } = await callWebhook(callbackRequest(7700, 6007, 'a:dashboard'), { adminService: adminSvc });
-    const texts = sentTexts(telegramFetch);
-    // The dashboard view is delivered via sendMessage; verify content arrived.
-    expect(texts.some((t) => t.includes('Users:') || t.includes('Providers:'))).toBe(true);
+    // /admin first: creates the one panel message and its durable session.
+    const opened = await callWebhook(textRequest(7699, 6007, 'private', '/admin'), { adminService: adminSvc });
+    expect(opened.telegramFetch).toHaveBeenCalledTimes(1);
+    // Callback against the SAME panel message (id 9 from telegramOk) → edit in place.
+    const pressed = await callWebhook(callbackRequest(7700, 6007, 'a:dashboard', 'private', 9), { adminService: adminSvc });
+    const urls = pressed.telegramFetch.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((u) => u.includes('/editMessageText'))).toBe(true);
+    const edited = pressed.telegramFetch.mock.calls
+      .filter((call) => String(call[0]).includes('/editMessageText'))
+      .map((call) => JSON.parse(String(call[1]?.body)) as { text: string });
+    expect(edited.some((b) => b.text.includes('Dashboard') || b.text.includes('Providers'))).toBe(true);
+    // The callback flow edits in place: no sendMessage in the callback request.
+    const sends = urls.filter((u) => u.includes('/sendMessage'));
+    expect(sends.length).toBe(0);
   });
 
-it('denies callback access to non-admins and unknown users without leaking data', async () => {
+  it('denies callbacks without a live panel session; a second user can never operate the panel', async () => {
     const adminSvc = new AdminService(env.DB, () => FIXED_NOW);
     await seedUser(6008, 'USER');
+    // USER with no session: answered, never executed, no dashboard data sent.
     const denied = await callWebhook(callbackRequest(7800, 6008, 'a:dashboard'), { adminService: adminSvc });
-    // Non-admin gets answerCallbackQuery with denial text, never a sendMessage with dashboard data.
-    const texts = sentTexts(denied.telegramFetch);
-    expect(texts.every((t) => !t.includes('Users:') && !t.includes('Providers:'))).toBe(true);
+    expect(denied.telegramFetch.mock.calls.some((call) => String(call[0]).includes('/answerCallbackQuery'))).toBe(true);
+    expect(denied.telegramFetch.mock.calls.some((call) => String(call[0]).includes('/sendMessage'))).toBe(false);
+    // Unknown user cannot create or reuse a session either.
     const unknown = await callWebhook(callbackRequest(7801, 424242, 'a:dashboard'), { adminService: adminSvc });
-    const unknownTexts = sentTexts(unknown.telegramFetch);
-    expect(unknownTexts.some((t) => t.includes('not authorized'))).toBe(true);
+    expect(unknown.telegramFetch.mock.calls.some((call) => String(call[0]).includes('/sendMessage'))).toBe(false);
     // No audit records are written for pre-authorization failures (authorize throws before audit).
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM admin_audit_logs').first('n')).toBe(0);
   });

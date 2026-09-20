@@ -30,43 +30,43 @@ export async function handleMemoryCommand(
   switch (parsed.command) {
     case '/remember': {
       if (parsed.arg.length === 0) {
-        return { text: 'Usage: /remember <text to remember>' };
+        return { text: '📝 Usage: /remember <text>\nExample: /remember My thesis deadline is May 3.' };
       }
       try {
         await service.store(userId, parsed.arg);
-        return { text: 'Saved.' };
+        return { text: '✅ Got it — saved to memory.' };
       } catch (err) {
         if (err && typeof err === 'object' && 'kind' in err) {
           const kind = (err as { kind: string }).kind;
-          if (kind === 'capacity') return { text: 'Memory limit reached. Use /forget to remove old memories first.' };
-          if (kind === 'invalid') return { text: 'Memory content must be between 2 and 2000 characters.' };
+          if (kind === 'capacity') return { text: '🧠 Your memory is full. Clear some space with /forget, then try again.' };
+          if (kind === 'invalid') return { text: '📝 Memories work best between 2 and 2000 characters.' };
         }
-        return { text: 'Could not save memory. Try again later.' };
+        return { text: '😕 Couldn’t save that memory. Please try again in a moment.' };
       }
     }
     case '/memories': {
       try {
         const list = await service.list(userId, 20);
-        if (list.length === 0) return { text: 'No memories stored.' };
+        if (list.length === 0) return { text: '🧠 Nothing stored yet. Save your first memory with /remember <text>.' };
         const lines = list.map((m, i) => `${i + 1}. ${m.content.slice(0, 100)}${m.content.length > 100 ? '...' : ''}`);
-        const body = lines.join('\n');
+        const body = `🧠 What I remember:\n\n${lines.join('\n')}`;
         return { text: body.length > 4000 ? body.slice(0, 3999) + '…' : body };
       } catch {
-        return { text: 'Could not retrieve memories. Try again later.' };
+        return { text: '😕 Couldn’t pull up your memories. Please try again in a moment.' };
       }
     }
     case '/forget': {
       if (parsed.arg.length === 0) {
         try {
           const count = await service.clear(userId);
-          return { text: count === 0 ? 'No memories to clear.' : `Cleared ${count} memories.` };
+          return { text: count === 0 ? '🧠 Nothing to clear — memory is already empty.' : `🧹 Cleared ${count} ${count === 1 ? 'memory' : 'memories'}.` };
         } catch {
-          return { text: 'Could not clear memories. Try again later.' };
+          return { text: '😕 Couldn’t clear memories. Please try again in a moment.' };
         }
       }
-      return { text: 'Usage: /forget (clears all memories). To store: /remember <text>' };
+      return { text: '🧹 /forget clears all memories. To save instead: /remember <text>' };
     }
     default:
-      return { text: 'Unknown memory command.' };
+      return { text: '🤔 Unknown memory command. Try /remember, /memories, or /forget.' };
   }
 }

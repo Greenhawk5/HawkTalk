@@ -206,7 +206,7 @@ describe('end-to-end routing, research, and usage through the real webhook', () 
     // Bare command → usage hint, no AI, no usage row, no conversation write.
     const bare = await callWebhook(84003, 74003, 'private', '/research', shared, 'req-rem-bare');
     expect(bare.status).toBe(200);
-    expect(sentBodies(shared).some((callBody) => String(callBody.body['text'] ?? '').includes('Usage:'))).toBe(true);
+    expect(sentBodies(shared).some((callBody) => String(callBody.body['text'] ?? '').includes('Quick tip'))).toBe(true);
     const bareMsgs = await env.DB.prepare('SELECT COUNT(*) AS n FROM messages').first<{ n: number }>();
     expect(bareMsgs?.n ?? 0).toBe(0);
     // Near-miss is ordinary conversational text (DEFAULT profile, still answers).
@@ -220,7 +220,7 @@ describe('end-to-end routing, research, and usage through the real webhook', () 
     // Blocked user is rejected by admission with the fixed denial text.
     const blocked = await callWebhook(84006, 74004, 'private', '/fast hi', shared, 'req-rem-blocked');
     expect(blocked.status).toBe(200);
-    expect(sentBodies(shared).some((callBody) => String(callBody.body['text'] ?? '').includes('cannot use'))).toBe(true);
+    expect(sentBodies(shared).some((callBody) => String(callBody.body['text'] ?? '').includes('can’t use the assistant'))).toBe(true);
     // Duplicate delivery of one flow update: one generation, one usage row.
     const first = await callWebhook(84007, 74003, 'private', '/fast again', shared, 'req-rem-dup');
     expect(first.status).toBe(200);

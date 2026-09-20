@@ -1,8 +1,20 @@
-// Phase 9 Telegram admin UI: parses admin commands/callbacks into structured
-// intents, renders views, and drives the AdminService. Business logic lives
-// entirely in AdminService; this file is presentation + input adaptation only.
+// Phase 9 admin UI (Telegram UX overhaul): parses admin commands/callbacks
+// into structured intents and renders HTML views for the interactive panel.
+// Business logic lives entirely in AdminService; this file is presentation +
+// input adaptation only.
+//
+// Design system:
+// - Views are Telegram HTML; EVERY dynamic value passes through the central
+//   escaper in ./format.ts — no raw interpolation anywhere.
+// - Technical values (ids, models, URLs, CLI commands) render as <code> so
+//   they are copy-friendly; secrets never appear in any view.
+// - One panel message per chat: navigation EDITS the message (the webhook
+//   layer owns that); this file only produces view + keyboard.
+// - Keyboards are two-column where suitable; ✕ Close is always a full-width
+//   final row that deletes the panel (handled by the transport).
 
 import { adminErrorText, type AdminError } from '../admin/errors';
+import { bold, clampHtml, code, escapeHtml } from './format';
 
 export const ADMIN_COMMAND = '/admin';
 export const MAX_PAGE_CHARS = 3800;
@@ -26,6 +38,7 @@ export function parseAdminCommand(text: string): AdminCommand | null {
  */
 export type AdminCallback =
   | { action: 'menu' }
+  | { action: 'close' }
   | { action: 'dashboard' }
   | { action: 'users'; cursor: number | null }
   | { action: 'user'; userId: number }
@@ -47,7 +60,7 @@ export type AdminCallback =
   | { action: 'editprov'; providerId: string; field: string }
   | { action: 'addcred'; providerId: string };
 
-const CALLBACK_ACTIONS: ReadonlySet<string> = new Set(['menu', 'dashboard', 'users', 'user', 'policy', 'providers', 'provider', 'audit', 'tools', 'credentials', 'provtog', 'credtog', 'credask', 'confirm', 'urole', 'ustat', 'usage', 'routing', 'addprov', 'editprov', 'addcred']);
+const CALLBACK_ACTIONS: ReadonlySet<string> = new Set(['menu', 'close', 'dashboard', 'users', 'user', 'policy', 'providers', 'provider', 'audit', 'tools', 'credentials', 'provtog', 'credtog', 'credask', 'confirm', 'urole', 'ustat', 'usage', 'routing', 'addprov', 'editprov', 'addcred']);
 const SAFE_ID = /^[a-z0-9-]{1,64}$/;
 const ROLES: ReadonlySet<string> = new Set(['OWNER', 'ADMIN', 'VIP', 'USER', 'BLOCKED']);
 const STATUSES: ReadonlySet<string> = new Set(['active', 'blocked']);
@@ -67,18 +80,19 @@ export function parseAdminCallback(data: string): AdminCallback | null {
   if (action === undefined || !CALLBACK_ACTIONS.has(action)) return null;
   switch (action) {
     case 'menu':
+    case 'close':
     case 'dashboard':
     case 'providers':
     case 'tools':
     case 'usage':
     case 'routing':
-      return parts.length === 2 ? { action } : null;
+      return parts.length === 2 ? { action: action as 'menu' | 'close' | 'dashboard' | 'providers' | 'tools' | 'usage' | 'routing' } : null;
     case 'users':
     case 'audit': {
-      if (parts.length === 2) return { action, cursor: null };
+      if (parts.length === 2) return { action: action as 'users' | 'audit', cursor: null };
       if (parts.length !== 3) return null;
       const cursor = numericArg(arg);
-      return cursor === null ? null : { action, cursor };
+      return cursor === null ? null : { action: action as 'users' | 'audit', cursor };
     }
     case 'user': {
       const userId = numericArg(arg);
@@ -143,7 +157,7 @@ export function parseAdminCallback(data: string): AdminCallback | null {
   }
 }
 
-// --- rendering (plain text only; no HTML/Markdown injection surface) -----------
+// --- rendering (Telegram HTML; central escaping via ./format.ts) -----------
 
 export interface InlineButton {
   text: string;
@@ -153,185 +167,233 @@ export interface InlineButton {
 export interface AdminView {
   text: string;
   keyboard: InlineButton[][];
+  /** Set for HTML views; plain-text views leave it undefined. */
+  parseMode?: 'HTML' | undefined;
 }
 
 function clamp(text: string): string {
-  return text.length > MAX_PAGE_CHARS ? `${text.slice(0, MAX_PAGE_CHARS)}…` : text;
+  return clampHtml(text);
 }
 
-function backButton(): InlineButton {
-  return { text: '← Back', callbackData: 'a:menu' };
+function button(text: string, callbackData: string): InlineButton {
+  return { text, callbackData };
 }
+
+function backButton(target: string = 'a:menu'): InlineButton {
+  return button('← Back', target);
+}
+
+/** Standard navigation: Back to the parent (when different from Home) + Home. */
+function navRow(backTarget: string = 'a:menu'): InlineButton[] {
+  return backTarget === 'a:menu' ? [backButton()] : [backButton(backTarget), button('🏠 Home', 'a:menu')];
+}
+
+const PROVISIONING_COMMAND = 'node --experimental-strip-types scripts/provision.mjs';
+
+const CLOSE_ROW: InlineButton[] = [button('✕ Close', 'a:close')];
 
 export function renderMenu(): AdminView {
   return {
-    text: 'HawkTalk Admin\n\nSelect a section:',
+    text: `${bold('🦅 HawkTalk Admin')}\n\nPick a section — everything applies live.`,
     keyboard: [
-      [{ text: '📊 Dashboard', callbackData: 'a:dashboard' }],
-      [{ text: '👥 Users', callbackData: 'a:users' }],
-      [{ text: '🤖 Providers', callbackData: 'a:providers' }],
-      [{ text: '📈 Quotas', callbackData: 'a:policy:USER' }],
-      [{ text: '🛠 Tools', callbackData: 'a:tools' }],
-      [{ text: '📋 Audit Logs', callbackData: 'a:audit' }],
-      [{ text: '💰 Usage', callbackData: 'a:usage' }],
-      [{ text: '🛰 Routing', callbackData: 'a:routing' }],
+      [button('📊 Dashboard', 'a:dashboard'), button('👥 Users', 'a:users')],
+      [button('🤖 Providers', 'a:providers'), button('📈 Quotas', 'a:policy:USER')],
+      [button('🛠 Tools', 'a:tools'), button('📋 Audit', 'a:audit')],
+      [button('💰 Usage', 'a:usage'), button('🛰 Routing', 'a:routing')],
+      CLOSE_ROW,
     ],
+    parseMode: 'HTML',
   };
+}
+
+function roleSummary(entries: Array<[string, number]>): string {
+  return entries.map(([role, count]) => `${escapeHtml(role)} ${count}`).join(' · ');
 }
 
 export function renderDashboard(metrics: { totalUsers: number; usersByRole: Record<string, number>; providers: { total: number; enabled: number }; credentialCount: number; recentAudit: Array<{ action: string; success: boolean }> }): AdminView {
-  const roles = Object.entries(metrics.usersByRole).map(([role, count]) => `${role}: ${count}`).join(', ');
+  const roles = roleSummary(Object.entries(metrics.usersByRole));
   const recent = metrics.recentAudit.length > 0
-    ? metrics.recentAudit.map((entry) => `${entry.success ? '✓' : '✗'} ${entry.action}`).join('\n')
+    ? metrics.recentAudit.map((entry) => `${entry.success ? '✅' : '⚠️'} ${escapeHtml(entry.action)}`).join('\n')
     : 'No admin activity yet.';
   return {
-    text: clamp(`📊 Dashboard\n\nUsers: ${metrics.totalUsers} (${roles})\nProviders: ${metrics.providers.enabled}/${metrics.providers.total} enabled\nCredentials: ${metrics.credentialCount}\n\nRecent admin activity:\n${recent}`),
-    keyboard: [[backButton()]],
+    text: clamp(`${bold('📊 Dashboard')}\n\n${bold('Users')}\n${metrics.totalUsers} total${roles.length > 0 ? ` — ${roles}` : ''}\n\n${bold('Providers')}\n${metrics.providers.enabled}/${metrics.providers.total} enabled · ${metrics.credentialCount} credential${metrics.credentialCount === 1 ? '' : 's'}\n\n${bold('Recent admin activity')}\n${recent}`),
+    keyboard: [navRow(), CLOSE_ROW],
+    parseMode: 'HTML',
   };
 }
 
+function statusDot(active: boolean): string {
+  return active ? '🟢' : '🔴';
+}
+
 export function renderUserList(users: Array<{ id: number; telegram_user_id: number; role: string; status: string }>, nextCursor: number | null): AdminView {
-  const lines = users.map((user) => `#${user.id} tg:${user.telegram_user_id} ${user.role}${user.status !== 'active' ? ` (${user.status})` : ''}`);
-  const keyboard: InlineButton[][] = users.slice(0, 10).map((user) => [{ text: `#${user.id} ${user.role}`, callbackData: `a:user:${user.id}` }]);
-  if (nextCursor !== null) keyboard.push([{ text: 'Next →', callbackData: `a:users:${nextCursor}` }]);
-  keyboard.push([backButton()]);
-  return { text: clamp(`👥 Users\n\n${lines.length > 0 ? lines.join('\n') : 'No users.'}`), keyboard };
+  const lines = users.map((user) => `${statusDot(user.status === 'active')} <code>#${user.id}</code> tg:${code(String(user.telegram_user_id))} · ${escapeHtml(user.role)}${user.status !== 'active' ? ` · ${escapeHtml(user.status)}` : ''}`);
+  const keyboard: InlineButton[][] = [];
+  for (let index = 0; index < users.length && index < 10; index += 2) {
+    const first = users[index];
+    const second = users[index + 1];
+    const row: InlineButton[] = [];
+    if (first !== undefined) row.push(button(`#${first.id} ${first.role}`, `a:user:${first.id}`));
+    if (second !== undefined) row.push(button(`#${second.id} ${second.role}`, `a:user:${second.id}`));
+    if (row.length > 0) keyboard.push(row);
+  }
+  if (nextCursor !== null) keyboard.push([button('Next →', `a:users:${nextCursor}`)]);
+  keyboard.push(navRow(), CLOSE_ROW);
+  return {
+    text: clamp(`${bold('👥 Users')}\n\n${lines.length > 0 ? lines.join('\n') : 'No users yet.'}`),
+    keyboard,
+    parseMode: 'HTML',
+  };
 }
 
 export function renderUserDetail(user: { id: number; telegram_user_id: number; username: string | null; display_name: string | null; role: string; status: string; created_at: string }): AdminView {
   const keyboard: InlineButton[][] = [];
   const roleRow: InlineButton[] = [];
-  if (user.role !== 'USER') roleRow.push({ text: '→ USER', callbackData: `a:urole:${user.id}:${user.role}:USER` });
-  if (user.role !== 'VIP') roleRow.push({ text: '→ VIP', callbackData: `a:urole:${user.id}:${user.role}:VIP` });
-  if (user.role !== 'ADMIN') roleRow.push({ text: '→ ADMIN', callbackData: `a:urole:${user.id}:${user.role}:ADMIN` });
+  if (user.role !== 'USER') roleRow.push(button('→ USER', `a:urole:${user.id}:${user.role}:USER`));
+  if (user.role !== 'VIP') roleRow.push(button('→ VIP', `a:urole:${user.id}:${user.role}:VIP`));
+  if (user.role !== 'ADMIN') roleRow.push(button('→ ADMIN', `a:urole:${user.id}:${user.role}:ADMIN`));
   if (roleRow.length > 0) keyboard.push(roleRow);
-  keyboard.push([{ text: user.status === 'active' ? '🚫 Block' : '✅ Unblock', callbackData: `a:ustat:${user.id}:${user.status === 'active' ? 'blocked' : 'active'}` }]);
-  keyboard.push([{ text: '← Users', callbackData: 'a:users' }]);
+  keyboard.push([button(user.status === 'active' ? '🚫 Block' : '✅ Unblock', `a:ustat:${user.id}:${user.status === 'active' ? 'blocked' : 'active'}`)]);
+  keyboard.push(navRow('a:users'), CLOSE_ROW);
   return {
-    text: clamp(`👤 User #${user.id}\nTelegram: ${user.telegram_user_id}\nName: ${user.display_name ?? '—'}\nUsername: ${user.username ?? '—'}\nRole: ${user.role}\nStatus: ${user.status}\nCreated: ${user.created_at}`),
+    text: clamp(`${bold(`👤 User #${user.id}`)}  ${statusDot(user.status === 'active')}\n\nTelegram: ${code(String(user.telegram_user_id))}\nName: ${escapeHtml(user.display_name ?? '—')}\nUsername: ${escapeHtml(user.username ?? '—')}\nRole: ${bold(user.role)}\nStatus: ${escapeHtml(user.status)}\nCreated: ${escapeHtml(user.created_at)}`),
     keyboard,
+    parseMode: 'HTML',
   };
 }
 
 export function renderProviderList(providers: Array<{ id: string; enabled: boolean; defaultModel: string; credentialCount: number }>): AdminView {
-  const lines = providers.map((provider) => `${provider.enabled ? '🟢' : '🔴'} ${provider.id} (${provider.credentialCount} cred, ${provider.defaultModel})`);
-  const keyboard: InlineButton[][] = providers.slice(0, 10).map((provider) => [{ text: `${provider.id}`, callbackData: `a:provider:${provider.id}` }]);
-  keyboard.push([{ text: '+ Add Provider', callbackData: 'a:addprov' }]);
-  keyboard.push([backButton()]);
+  const lines = providers.map((provider) => `${statusDot(provider.enabled)} ${code(provider.id)} — ${provider.credentialCount} credential${provider.credentialCount === 1 ? '' : 's'} · ${code(provider.defaultModel)}`);
+  const keyboard: InlineButton[][] = [];
+  for (let index = 0; index < providers.length && index < 10; index += 2) {
+    const first = providers[index];
+    const second = providers[index + 1];
+    const row: InlineButton[] = [];
+    if (first !== undefined) row.push(button(first.id, `a:provider:${first.id}`));
+    if (second !== undefined) row.push(button(second.id, `a:provider:${second.id}`));
+    if (row.length > 0) keyboard.push(row);
+  }
+  keyboard.push([button('➕ Add provider', 'a:addprov')]);
+  keyboard.push(navRow(), CLOSE_ROW);
   return {
-    text: clamp(`🤖 Providers\n\n${lines.length > 0 ? lines.join('\n') : 'No providers configured.'}`),
+    text: clamp(`${bold('🤖 AI Providers')}\n\n${lines.length > 0 ? lines.join('\n') : 'No providers configured yet.'}`),
     keyboard,
+    parseMode: 'HTML',
   };
 }
 
 export function renderProviderDetail(provider: { id: string; baseUrl: string; enabled: boolean; weight: number; defaultModel: string; timeoutMs: number; maxCredentialAttempts: number; credentials: Array<{ id: string; label: string; enabled: boolean; weight: number }> }, actorRole: string): AdminView {
   const keyboard: InlineButton[][] = [];
-  keyboard.push([{ text: provider.enabled ? '⏸ Disable' : '▶ Enable', callbackData: `a:provtog:${provider.id}:${provider.enabled ? 'off' : 'on'}` }]);
+  keyboard.push([button(provider.enabled ? '⏸ Disable' : '▶ Enable', `a:provtog:${provider.id}:${provider.enabled ? 'off' : 'on'}`)]);
   keyboard.push([
-    { text: 'Edit URL', callbackData: `a:editprov:${provider.id}:baseUrl` },
-    { text: 'Edit Model', callbackData: `a:editprov:${provider.id}:defaultModel` },
+    button('✏️ URL', `a:editprov:${provider.id}:baseUrl`),
+    button('✏️ Model', `a:editprov:${provider.id}:defaultModel`),
   ]);
   keyboard.push([
-    { text: 'Edit Weight', callbackData: `a:editprov:${provider.id}:weight` },
-    { text: 'Edit Timeout', callbackData: `a:editprov:${provider.id}:timeoutMs` },
+    button('✏️ Weight', `a:editprov:${provider.id}:weight`),
+    button('✏️ Timeout', `a:editprov:${provider.id}:timeoutMs`),
   ]);
   for (const credential of provider.credentials) {
-    const row: InlineButton[] = [{ text: `${credential.enabled ? '⏸' : '▶'} ${credential.id}`, callbackData: `a:credtog:${credential.id}:${credential.enabled ? 'off' : 'on'}` }];
-    if (actorRole === 'OWNER') row.push({ text: '🗑 Delete', callbackData: `a:credask:${credential.id}` });
+    const row: InlineButton[] = [button(`${credential.enabled ? '⏸' : '▶'} ${credential.id}`, `a:credtog:${credential.id}:${credential.enabled ? 'off' : 'on'}`)];
+    if (actorRole === 'OWNER') row.push(button('🗑 Delete', `a:credask:${credential.id}`));
     keyboard.push(row);
   }
-  keyboard.push([{ text: '+ Add Credential', callbackData: `a:addcred:${provider.id}` }]);
-  keyboard.push([{ text: '← Providers', callbackData: 'a:providers' }]);
-  const credentials = provider.credentials.map((credential) => `${credential.enabled ? '🟢' : '🔴'} ${credential.id} "${credential.label}" w${credential.weight}`).join('\n');
+  keyboard.push([button('➕ Add credential', `a:addcred:${provider.id}`)]);
+  keyboard.push(navRow('a:providers'), CLOSE_ROW);
+  const credentials = provider.credentials.map((credential) => `${statusDot(credential.enabled)} ${code(credential.id)} ${escapeHtml(credential.label.length > 0 ? `“${credential.label}”` : '—')} · w${credential.weight}`).join('\n');
   return {
-    text: clamp(`⚙️ Provider ${provider.id}\n\nURL: ${provider.baseUrl}\nModel: ${provider.defaultModel}\nEnabled: ${provider.enabled ? 'yes' : 'no'}\nWeight: ${provider.weight}\nTimeout: ${provider.timeoutMs} ms\nCredential attempts: ${provider.maxCredentialAttempts}\n\nCredentials:\n${credentials || 'None'}`),
+    text: clamp(`${bold(`⚙️ Provider`)}\n\n${code(provider.id)}  ${statusDot(provider.enabled)}\n\nURL\n${code(provider.baseUrl)}\n\nDefault model\n${code(provider.defaultModel)}\n\nWeight ${code(String(provider.weight))} · Timeout ${code(`${provider.timeoutMs} ms`)} · Attempts ${code(String(provider.maxCredentialAttempts))}\n\n${bold('Credentials')}\n${credentials || 'None yet.'}`),
     keyboard,
+    parseMode: 'HTML',
   };
 }
 
 export function renderConfirmation(pending: { action: string; targetType: string; targetId: string; confirmationId: string }): AdminView {
   const what = pending.action === 'credentials.delete'
-    ? `permanently delete credential "${pending.targetId}"`
+    ? `permanently delete credential ${code(pending.targetId)}`
     : pending.action === 'users.set_role'
       ? 'change a privileged role'
       : 'block a privileged user';
   return {
-    text: clamp(`⚠️ Confirmation required\n\nYou are about to ${what}.\nThis cannot be undone.`),
+    text: clamp(`${bold('⚠️ Confirm action')}\n\nYou are about to ${what}.\n\nThis action cannot be undone.`),
     keyboard: [
-      [{ text: '✅ Confirm', callbackData: `a:confirm:${pending.confirmationId}` }],
-      [{ text: '← Back', callbackData: 'a:menu' }],
+      [button('✅ Confirm', `a:confirm:${pending.confirmationId}`), button('Cancel', 'a:menu')],
+      CLOSE_ROW,
     ],
+    parseMode: 'HTML',
   };
 }
 
 export function renderPolicy(policy: { role: string; dailyMessages: number; perSecond: number; perHour: number; bypassQuota: boolean; bypassRate: boolean }): AdminView {
   return {
-    text: clamp(`📈 Policy — ${policy.role}\n\nDaily messages: ${policy.dailyMessages}\nPer second: ${policy.perSecond}\nPer hour: ${policy.perHour}\nBypass quota: ${policy.bypassQuota ? 'yes' : 'no'}\nBypass rate: ${policy.bypassRate ? 'yes' : 'no'}`),
-    keyboard: [[backButton()]],
+    text: clamp(`${bold(`📈 Quota — ${escapeHtml(policy.role)}`)}\n\nDaily messages: ${code(String(policy.dailyMessages))}\nPer second: ${code(String(policy.perSecond))}\nPer hour: ${code(String(policy.perHour))}\nBypass quota: ${policy.bypassQuota ? 'yes' : 'no'}\nBypass rate: ${policy.bypassRate ? 'yes' : 'no'}`),
+    keyboard: [navRow(), CLOSE_ROW],
+    parseMode: 'HTML',
   };
 }
 
 export function renderTools(tools: string[]): AdminView {
+  const lines = tools.length > 0 ? tools.map((tool) => `• ${code(tool)}`).join('\n') : 'No tools registered.';
   return {
-    text: clamp(`🛠 Tools\n\n${tools.length > 0 ? tools.join('\n') : 'No tools registered.'}`),
-    keyboard: [[backButton()]],
+    text: clamp(`${bold('🛠 Tools')}\n\n${lines}`),
+    keyboard: [navRow(), CLOSE_ROW],
+    parseMode: 'HTML',
+  };
+}
+
+export function renderRouting(profiles: Array<{ profile: string; label: string; description: string }>): AdminView {
+  const lines = profiles.map((entry) => `${code(entry.profile)} ${escapeHtml(entry.label)} — ${escapeHtml(entry.description)}`).join('\n');
+  return {
+    text: clamp(`${bold('🛰 Model routing')}\n\n${lines}\n\nSelect a profile per message with /fast, /smart, /research (default when omitted).`),
+    keyboard: [navRow(), CLOSE_ROW],
+    parseMode: 'HTML',
+  };
+}
+
+export function renderAudit(records: Array<{ id: number; actorRole: string; action: string; targetType: string; targetId: string | null; success: boolean; createdAt: string }>, nextCursor: number | null): AdminView {
+  const lines = records.map((record) => `${record.success ? '✅' : '⚠️'} <code>#${record.id}</code> ${escapeHtml(record.createdAt)} ${escapeHtml(record.actorRole)} ${escapeHtml(record.action)}${record.targetId !== null ? ` → ${code(record.targetId)}` : ''}`);
+  const keyboard: InlineButton[][] = [];
+  if (nextCursor !== null) keyboard.push([button('Next →', `a:audit:${nextCursor}`)]);
+  keyboard.push(navRow(), CLOSE_ROW);
+  return {
+    text: clamp(`${bold('📋 Audit logs')}\n\n${lines.length > 0 ? lines.join('\n') : 'No audit records yet — nothing to show.'}`),
+    keyboard,
+    parseMode: 'HTML',
+  };
+}
+
+export function renderError(kind: AdminError['kind']): AdminView {
+  return { text: adminErrorText(kind), keyboard: [navRow(), CLOSE_ROW] };
+}
+
+export function renderAddProviderInstructions(): AdminView {
+  return {
+    text: clamp(`${bold('➕ Add provider')}\n\nProviders are created with the secure provisioning CLI (never via chat), so the same validation always applies:\n\n${code(`${PROVISIONING_COMMAND} provider <id> <base-url> <default-model> [weight] [timeout-ms] [max-attempts] --env production`)}\n\nFields: id (lowercase [a-z0-9-]), base_url (https only), default_model. Optional: weight (1–10000, default 100), timeout_ms (1000–120000, default 30000), max_credential_attempts (1–10, default 3).\n\n⚠️ Never send API keys or configuration values through Telegram.`),
+    keyboard: [navRow('a:providers'), CLOSE_ROW],
+    parseMode: 'HTML',
+  };
+}
+export function renderEditProviderField(providerId: string, field: string, currentValue: string): AdminView {
+  return {
+    text: clamp(`${bold('⚙️ Edit provider')}\n\nProvider\n${code(providerId)}\n\nField\n${code(field)}\n\nCurrent value\n${code(currentValue)}\n\n────────────────\n\n🔐 Configuration changes happen outside Telegram on purpose.\n\nRe-create with the provisioning CLI so the same validation applies:\n\n${code(`${PROVISIONING_COMMAND} provider ... --env production`)}\n\n⚠️ Never send configuration values or API keys through Telegram.`),
+    keyboard: [navRow(`a:provider:${providerId}`), CLOSE_ROW],
+    parseMode: 'HTML',
+  };
+}
+
+export function renderAddCredentialInstructions(providerId: string): AdminView {
+  return {
+    text: clamp(`${bold('➕ Add credential')}\n\nProvider\n${code(providerId)}\n\n🔐 API keys must never be sent through Telegram — chat history persists server-side.\n\nProvision securely with the committed CLI: the key is read from a hidden prompt and sealed with AES-GCM before storage.\n\n${code(`${PROVISIONING_COMMAND} credential ${providerId} "<label>" --env production`)}\n\nThe plaintext key exists only briefly during encryption and never appears in logs, audit records, or admin listings.`),
+    keyboard: [navRow(`a:provider:${providerId}`), CLOSE_ROW],
+    parseMode: 'HTML',
   };
 }
 
 export function renderUsage(summary: { generations: number; inputTokens: number; outputTokens: number; estimatedCostMicrodollars: number }): AdminView {
   const dollars = (summary.estimatedCostMicrodollars / 1_000_000).toFixed(4);
   return {
-    text: clamp(`💰 Usage & Cost\n\nGenerations: ${summary.generations}\nInput tokens: ${summary.inputTokens}\nOutput tokens: ${summary.outputTokens}\nEstimated spend: $${dollars} (estimates only)`),
-    keyboard: [[backButton()]],
-  };
-}
-
-export function renderRouting(profiles: Array<{ profile: string; label: string; description: string }>): AdminView {
-  const lines = profiles.map((entry) => `${entry.label} (${entry.profile}) — ${entry.description}`).join('\n');
-  return {
-    text: clamp(`🛰 Model Routing\n\n${lines}\n\nSelect profiles in conversation with /fast, /smart, /research (default when omitted).`),
-    keyboard: [[backButton()]],
-  };
-}
-
-export function renderAudit(records: Array<{ id: number; actorRole: string; action: string; targetType: string; targetId: string | null; success: boolean; createdAt: string }>, nextCursor: number | null): AdminView {
-  const lines = records.map((record) => `#${record.id} ${record.createdAt} ${record.actorRole} ${record.action}${record.targetId !== null ? ` → ${record.targetId}` : ''}${record.success ? '' : ' [failed]'}`);
-  const keyboard: InlineButton[][] = [];
-  if (nextCursor !== null) keyboard.push([{ text: 'Next →', callbackData: `a:audit:${nextCursor}` }]);
-  keyboard.push([backButton()]);
-  return {
-    text: clamp(`📋 Audit Logs\n\n${lines.length > 0 ? lines.join('\n') : 'No audit records.'}`),
-    keyboard,
-  };
-}
-
-export function renderError(kind: AdminError['kind']): AdminView {
-  return { text: adminErrorText(kind), keyboard: [[backButton()]] };
-}
-
-export function renderAddProviderInstructions(): AdminView {
-  return {
-    text: clamp('Add Provider\n\nProviders are created via the secure provisioning CLI (never via chat):\n\nnode --experimental-strip-types scripts/provision.mjs provider <id> <base-url> <default-model> [weight] [timeout-ms] [max-attempts] --env production\n\nFields: id (lowercase [a-z0-9-]), base_url (https only), default_model. Optional: weight (1-10000, default 100), timeout_ms (1000-120000, default 30000), max_credential_attempts (1-10, default 3).'),
-    keyboard: [[{ text: '← Providers', callbackData: 'a:providers' }]],
-  };
-}
-
-export function renderEditProviderField(providerId: string, field: string, currentValue: string): AdminView {
-  return {
-    text: clamp(`Edit ${field}\n\nProvider: ${providerId}\nField: ${field}\nCurrent value: ${currentValue}\n\nUpdates are applied via the secure provisioning CLI so the same validation applies:\n\nRe-create with node --experimental-strip-types scripts/provision.mjs provider ... (safe no-op if unchanged) or update via wrangler d1 execute using the CLI-validated value. Do not send configuration values through Telegram.`),
-    keyboard: [
-      [{ text: '← Provider', callbackData: `a:provider:${providerId}` }],
-      [{ text: '← Providers', callbackData: 'a:providers' }],
-    ],
-  };
-}
-
-export function renderAddCredentialInstructions(providerId: string): AdminView {
-  return {
-    text: clamp(`Add Credential\n\nProvider: ${providerId}\n\nAPI keys MUST NOT be sent through Telegram (chat history persists server-side).\n\nProvision securely with the committed CLI — the key is read from a hidden stdin prompt and sealed with AES-GCM before storage:\n\nnode --experimental-strip-types scripts/provision.mjs credential ${providerId} "<label>" --env production\n\nThe plaintext key exists only transiently during encryption and never appears in logs, audit records, or admin listings.`),
-    keyboard: [
-      [{ text: '← Provider', callbackData: `a:provider:${providerId}` }],
-      [{ text: '← Providers', callbackData: 'a:providers' }],
-    ],
+    text: clamp(`${bold('💰 Usage & cost')}\n\nGenerations: ${code(String(summary.generations))}\nInput tokens: ${code(String(summary.inputTokens))}\nOutput tokens: ${code(String(summary.outputTokens))}\nEstimated spend: $${dollars} (estimates only)`),
+    keyboard: [navRow(), CLOSE_ROW],
+    parseMode: 'HTML',
   };
 }

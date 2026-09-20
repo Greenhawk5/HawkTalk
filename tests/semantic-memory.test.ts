@@ -251,7 +251,7 @@ describe('Telegram memory commands', () => {
     const repo = makeFakeRepo();
     const svc = new SemanticMemoryService({ repo, embeddings: new FakeEmbeddingProvider(1024), vectorIndex: makeFakeVectorIndex() });
     const result = await handleMemoryCommand({ command: '/remember', arg: 'I like tea' }, 1, svc);
-    expect(result.text).toBe('Saved.');
+    expect(result.text).toBe('✅ Got it — saved to memory.');
   });
 
   it('returns usage hint for bare /remember', async () => {

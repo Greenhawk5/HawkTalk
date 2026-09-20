@@ -89,6 +89,9 @@ export function parseTelegramUpdate(payload: unknown): ParsedTelegramUpdate | nu
         callbackQueryId: callbackQuery['id'] as string,
         userId: from['id'] as number,
         chatId: message['chat']['id'] as number,
+        // The panel message this callback belongs to; used to bind callbacks to
+        // the durable admin panel session (same-message editing + expiry).
+        messageId: isSafeIntegerId(message['message_id']) ? (message['message_id'] as number) : -1,
         chatType: optionalText(message['chat']['type']) ?? 'unknown',
         data,
       };

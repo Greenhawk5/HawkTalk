@@ -1,18 +1,22 @@
 import { claimUpdate, releaseUpdateClaim, upsertTelegramUser } from '../db/telegram';
 import { findInternalUserIdByTelegramId } from '../db/users';
+import { deletePanelSession, getPanelSession, touchPanelSession, upsertPanelSession } from '../admin/panel-sessions';
+import type { AdminPanelSession } from '../admin/panel-sessions';
 import type { ConversationFlowDeps } from '../orchestration/service';
 import { ConversationFlowError, getCompletedAssistantText, handleUserTextMessage, PRE_GENERATION_ERROR_KINDS } from '../orchestration/service';
 import type { AppEnv } from '../env';
-import { sendTelegramMessage, answerCallbackQuery } from './client';
+import { sendTelegramMessage, editMessageText, deleteMessage, answerCallbackQuery, type TelegramInlineKeyboard } from './client';
 import { parseTelegramUpdate } from './parser';
 import { TRANSPORT_ACK_TEXT } from './ack';
-import { ADMIN_COMMAND } from './admin-ui';
+import { ADMIN_COMMAND, type AdminView } from './admin-ui';
 import { MODE_COMMAND_USAGE_HINT, parseUserCommand } from './user-commands';
 import { handleAdminCallback, handleAdminCommand } from './admin-handler';
+import type { AdminOutcome } from './admin-handler';
 import type { AdminService } from '../admin/service';
 import { parseMemoryCommand, handleMemoryCommand } from './memory-commands';
 import { buildProductionMemoryService } from '../orchestration/production';
 import { isControlPlaneCommand, handleControlPlaneCommand } from './control-plane';
+import './types';
 
 // Telegram webhook entrypoint (Phase 2 transport + Phase 6 conversational flow).
 //
@@ -43,6 +47,237 @@ export const TELEGRAM_WEBHOOK_PATH = '/telegram/webhook';
 const WEBHOOK_SECRET_HEADER = 'X-Telegram-Bot-Api-Secret-Token';
 const MAX_BODY_BYTES = 256 * 1024;
 
+// Admin panel delivery (Phase 10 UX). These helpers are transport-only:
+// authorization and all business rules stay in handleAdminCallback /
+// AdminService (which re-authorize every operation against current D1 state).
+
+/** Short bounded text sent via answerCallbackQuery for panel session problems. */
+const PANEL_EXPIRED_TEXT = 'This panel has expired. Send /admin to reopen it.';
+const PANEL_CLOSED_TEXT = '⏱️ Admin panel closed due to inactivity.';
+/** D1/session infrastructure failure (NOT an expired panel): distinct, actionable. */
+const PANEL_UNAVAILABLE_TEXT = 'The admin panel is temporarily unavailable. Send /admin again in a moment.';
+const PANEL_FOREIGN_TEXT = 'This panel belongs to another admin.';
+const PANEL_UPDATE_FAILED_TEXT = 'The panel could not be updated. Send /admin to reopen it.';
+
+type PanelView = Pick<AdminView, 'text' | 'keyboard' | 'parseMode'>;
+
+function viewMarkup(view: PanelView): TelegramInlineKeyboard {
+  return { inline_keyboard: view.keyboard.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) };
+}
+
+interface EditCall {
+  token: string;
+  chatId: number;
+  messageId: number;
+  text: string;
+  replyMarkup: TelegramInlineKeyboard;
+  parseMode?: 'HTML' | undefined;
+  fetchImpl?: typeof fetch | undefined;
+}
+
+/** /admin text command: exactly one panel message per chat. */
+async function openAdminPanel(
+  db: D1Database,
+  botToken: string,
+  nowMs: number,
+  chatId: number,
+  telegramUserId: number,
+  internalUserId: number | null,
+  outcome: Extract<AdminOutcome, { kind: 'view' }>,
+  requestId: string,
+  fetchImpl: typeof fetch | undefined,
+  editCall: (input: EditCall) => Promise<void>,
+): Promise<void> {
+  const view = outcome.view satisfies PanelView;
+  const markup = viewMarkup(view);
+  const nowIso = Number.isFinite(nowMs) ? new Date(nowMs).toISOString() : undefined;
+  console.log(JSON.stringify({ event: 'admin_panel_open_requested', chat_id: chatId, telegram_user_id: telegramUserId, current_time: nowIso ?? null }));
+  // A live session owned by this admin → reuse the same panel message.
+  // A READ FAILURE (e.g. missing table / D1 outage) is logged distinctly and
+  // treated as "no session" — but never silently.
+  const existing = await getPanelSession(db, chatId).catch(() => {
+    console.error(JSON.stringify({ event: 'admin_panel_session_read_failed', chat_id: chatId }));
+    return null;
+  });
+  if (existing !== null) {
+    console.log(JSON.stringify({
+      event: 'admin_panel_session_found',
+      chat_id: existing.chatId,
+      session_message_id: existing.messageId,
+      telegram_user_id: existing.telegramUserId,
+      admin_user_id: existing.adminUserId,
+      last_activity_at: existing.lastActivityAt,
+      expires_at: existing.expiresAt,
+      remaining_ms: nowIso === undefined ? null : Date.parse(existing.expiresAt) - Date.parse(nowIso),
+    }));
+  } else {
+    console.log(JSON.stringify({ event: 'admin_panel_session_missing', chat_id: chatId }));
+  }
+  const reuseEligible = existing !== null && existing.telegramUserId === telegramUserId && (nowIso === undefined || existing.expiresAt > nowIso);
+  console.log(JSON.stringify({
+    event: 'admin_panel_reuse_decision',
+    chat_id: chatId,
+    session_message_id: existing?.messageId ?? null,
+    reason: existing === null ? 'no_session'
+      : !reuseEligible && existing.telegramUserId !== telegramUserId ? 'ownership_mismatch'
+      : !reuseEligible ? 'expired_session'
+      : 'valid_session',
+  }));
+  if (reuseEligible) {
+    try {
+      await editCall({ token: botToken, chatId, messageId: existing.messageId, text: view.text, replyMarkup: markup, ...(view.parseMode !== undefined ? { parseMode: view.parseMode } : {}) });
+      if (Number.isFinite(nowMs)) await touchPanelSession(db, chatId, nowMs).catch((error: unknown) => {
+        console.error(JSON.stringify({ event: 'admin_panel_touch_failed', chat_id: chatId }));
+        void error;
+      });
+      console.log(JSON.stringify({ event: 'admin_panel_reused', chat_id: chatId, message_id: existing.messageId }));
+      return;
+    } catch {
+      // Stale session (message deleted externally): the old panel is gone from
+      // Telegram but its row still points at it — remove it and open fresh.
+      console.log(JSON.stringify({ event: 'admin_panel_reuse_decision', chat_id: chatId, session_message_id: existing.messageId, reason: 'edit_failed' }));
+      await deletePanelSession(db, chatId).catch(() => undefined);
+    }
+  } else if (existing !== null && (nowIso === undefined || existing.expiresAt <= nowIso)) {
+    // The session expired but the old panel message is still visible in
+    // Telegram. Delete it BEFORE opening the new panel, otherwise the orphaned
+    // panel keeps rendering dead buttons ("This panel has expired") forever.
+    // Best-effort: if the delete fails here, the cron cleanup retries it only
+    // while the session row still existed — it is replaced below, so also
+    // remove the row to avoid the cron deleting the NEW panel message.
+    await deleteMessage({ token: botToken, chatId, messageId: existing.messageId, ...(fetchImpl !== undefined ? { fetchImpl } : {}) }).catch(() => {
+      console.error(JSON.stringify({ event: 'admin_panel_message_delete_failed', chat_id: chatId, message_id: existing.messageId }));
+    });
+    await deletePanelSession(db, chatId).catch(() => undefined);
+  }
+  const sent = await sendTelegramMessage({ token: botToken, chatId, text: view.text, replyMarkup: markup, ...(view.parseMode !== undefined ? { parseMode: view.parseMode } : {}), ...(fetchImpl !== undefined ? { fetchImpl } : {}) });
+  console.log(JSON.stringify({ event: 'telegram_send_message_success', chat_id: chatId, message_id: sent.messageId }));
+  if (internalUserId !== null && sent.messageId !== null && Number.isFinite(nowMs)) {
+    // Persist, then VERIFY the row is actually readable — a failed INSERT must
+    // never be silently swallowed (it previously produced a dead-on-arrival
+    // panel whose buttons all answered "expired", while the created log lied).
+    try {
+      await upsertPanelSession(db, { chatId, messageId: sent.messageId, telegramUserId, adminUserId: internalUserId, nowMs });
+    } catch {
+      console.error(JSON.stringify({ event: 'admin_panel_session_persist_failed', chat_id: chatId, message_id: sent.messageId, admin_user_id: internalUserId }));
+    }
+    const persisted = await getPanelSession(db, chatId).catch(() => null);
+    if (persisted !== null && persisted.messageId === sent.messageId) {
+      console.log(JSON.stringify({ event: 'admin_panel_session_persisted', chat_id: chatId, message_id: persisted.messageId, expires_at: persisted.expiresAt, last_activity_at: persisted.lastActivityAt }));
+    } else {
+      console.error(JSON.stringify({ event: 'admin_panel_session_persist_failed', chat_id: chatId, message_id: sent.messageId, admin_user_id: internalUserId }));
+    }
+    console.log(JSON.stringify({ event: 'admin_panel_created', chat_id: chatId, message_id: sent.messageId }));
+  } else {
+    console.error(JSON.stringify({ event: 'webhook_panel_session_skipped', request_id: requestId }));
+  }
+}
+
+/** Admin button presses: validate the durable panel session, then edit/close. */
+async function handleAdminPanelCallback(
+  options: {
+    db: D1Database;
+    botToken: string;
+    nowMs: number;
+    chatId: number;
+    telegramUserId: number;
+    messageId: number;
+    data: string;
+    requestId: string;
+    adminService: AdminService;
+    editCall: (input: EditCall) => Promise<void>;
+    answerCall: (text?: string) => Promise<unknown>;
+    deleteCall: (messageId: number) => Promise<void>;
+  },
+): Promise<Response> {
+  const { db, botToken, nowMs, chatId, telegramUserId, messageId, data, requestId, adminService, editCall, answerCall, deleteCall } = options;
+  console.log(JSON.stringify({
+    event: 'admin_panel_callback_received',
+    callback_query_id: requestId,
+    telegram_user_id: telegramUserId,
+    callback_chat_id: chatId,
+    callback_message_id: messageId,
+  }));
+  // A D1 READ FAILURE is NOT an expired panel. Treating it as "expired" (the
+  // old behavior) produced the misleading production toast while the real
+  // cause — e.g. a missing admin_panel_sessions table — stayed invisible.
+  const read = await getPanelSession(db, chatId).then(
+    (value: AdminPanelSession | null) => ({ ok: true as const, value }),
+    (): { ok: false } => ({ ok: false }),
+  );
+  if (!read.ok) {
+    console.error(JSON.stringify({ event: 'admin_panel_session_read_failed', lookup_chat_id: chatId, callback_message_id: messageId }));
+    await answerCall(PANEL_UNAVAILABLE_TEXT);
+    return Response.json({ ok: true });
+  }
+  const session = read.value;
+  console.log(JSON.stringify({
+    event: 'admin_panel_callback_session_lookup',
+    lookup_chat_id: chatId,
+    lookup_message_id: messageId,
+    found: session !== null,
+    stored_chat_id: session?.chatId ?? null,
+    stored_message_id: session?.messageId ?? null,
+    stored_expires_at: session?.expiresAt ?? null,
+    now: Number.isFinite(nowMs) ? new Date(nowMs).toISOString() : null,
+    remaining_ms: session !== null && Number.isFinite(nowMs) ? Date.parse(session.expiresAt) - nowMs : null,
+  }));
+  if (session === null || session.messageId !== messageId) {
+    // No live panel for this chat, or a stale button from a replaced panel:
+    // never execute, never touch state.
+    console.log(JSON.stringify({ event: 'admin_panel_callback_rejected', lookup_chat_id: chatId, lookup_message_id: messageId, reason: session === null ? 'no_session' : 'message_mismatch' }));
+    await answerCall(PANEL_EXPIRED_TEXT);
+    return Response.json({ ok: true });
+  }
+  if (session.telegramUserId !== telegramUserId) {
+    // A second Telegram user pressed a button they obtained somehow: deny
+    // without executing anything and without touching the session.
+    console.error(JSON.stringify({ event: 'admin_panel_foreign_user', request_id: requestId }));
+    await answerCall(PANEL_FOREIGN_TEXT);
+    return Response.json({ ok: true });
+  }
+  if (!Number.isFinite(nowMs) || session.expiresAt <= new Date(nowMs).toISOString()) {
+    // Inactivity timeout reached before cron cleanup ran: the panel message is
+    // deleted (never edited into an "expired" screen) and the session drops.
+    // The cron sends the friendly close notice; this path answers the press
+    // defensively without executing any admin action.
+    console.log(JSON.stringify({ event: 'admin_panel_callback_rejected', lookup_chat_id: chatId, lookup_message_id: messageId, reason: 'expired', stored_expires_at: session.expiresAt }));
+    await deleteCall(session.messageId).catch(() => undefined);
+    await deletePanelSession(db, chatId).catch(() => undefined);
+    console.log(JSON.stringify({ event: 'admin_panel_expired', chat_id: chatId, message_id: session.messageId }));
+    await answerCall(PANEL_CLOSED_TEXT);
+    return Response.json({ ok: true });
+  }
+
+  // Live panel owned by this admin: execution re-authorizes everything
+  // server-side (checkAccess + service-level auth); buttons are never trusted.
+  const outcome = await handleAdminCallback(db, adminService, telegramUserId, data);
+  if (outcome.kind === 'close') {
+    await deleteCall(session.messageId).catch(() => undefined);
+    await deletePanelSession(db, chatId).catch(() => undefined);
+    await answerCall();
+    return Response.json({ ok: true });
+  }
+  if (outcome.kind === 'answer') {
+    if (Number.isFinite(nowMs)) await touchPanelSession(db, chatId, nowMs).catch(() => undefined);
+    await answerCall(outcome.text);
+    return Response.json({ ok: true });
+  }
+  try {
+    await editCall({ token: botToken, chatId, messageId: session.messageId, text: outcome.view.text, replyMarkup: viewMarkup(outcome.view satisfies PanelView), ...(outcome.view.parseMode !== undefined ? { parseMode: outcome.view.parseMode } : {}) });
+  } catch {
+    // The panel message is gone or Telegram rejected the edit: drop the stale
+    // session so the next press reopens cleanly; never leak internals.
+    console.error(JSON.stringify({ event: 'webhook_panel_edit_failed', request_id: requestId }));
+    await deletePanelSession(db, chatId).catch(() => undefined);
+    await answerCall(PANEL_UPDATE_FAILED_TEXT);
+    return Response.json({ ok: true });
+  }
+  if (Number.isFinite(nowMs)) await touchPanelSession(db, chatId, nowMs).catch(() => undefined);
+  await answerCall();
+  return Response.json({ ok: true });
+}
+
 export interface WebhookDeps {
   fetchImpl?: typeof fetch | undefined;
   now?: (() => string) | undefined;
@@ -50,6 +285,16 @@ export interface WebhookDeps {
   flow?: ConversationFlowFactory | undefined;
   /** Phase 9 admin CMS; when absent, admin updates are acknowledged (fail closed). */
   adminService?: AdminService | undefined;
+  /**
+   * Cloudflare background execution (ExecutionContext.waitUntil). When
+   * provided, the webhook responds 200 immediately after the durable claim
+   * and the conversational processing (user upsert, Agent Core, AI Router,
+   * persistence, Telegram delivery) continues under waitUntil — so a slow
+   * provider generation (e.g. a 60s provider timeout_ms) can never race the
+   * ~60s Telegram webhook deadline that cancels the request. When absent,
+   * processing stays fully synchronous (legacy behavior preserved for tests).
+   */
+  waitUntil?: ((promise: Promise<unknown>) => void) | undefined;
 }
 
 export type ConversationFlowFactory = (requestId: string, internalUserId: number) => ConversationFlowDeps;
@@ -193,6 +438,12 @@ export async function handleTelegramWebhook(
   // flow, never invokes Agent Core / AI Router / tools, and never consumes
   // normal conversational quota. Without a wired AdminService the update is
   // acknowledged (fail closed) rather than treated as a chat message.
+  //
+  // Admin panel delivery (Phase 10 UX): one panel message per chat. Views EDIT
+  // that message (editMessageText); Close DELETES it. A durable D1 session
+  // (admin_panel_sessions) binds every callback to the panel's chat, message,
+  // and owning admin, with a 5-minute inactivity expiry enforced by the
+  // scheduled cleanup handler — not by in-isolate timers.
   if (isControlPlaneUpdate) {
     // Control-plane commands (/start, /help): deterministic, no AI required.
     if (update.kind === 'text_message' && isControlPlaneCommand(update.text)) {
@@ -229,36 +480,31 @@ export async function handleTelegramWebhook(
       console.error(JSON.stringify({ event: 'webhook_misconfigured', request_id: requestId }));
       return Response.json({ error: 'Something went wrong' }, { status: 500 });
     }
+    const nowMs = Date.parse(now());
     try {
       if (update.kind === 'admin_callback') {
-        // Malformed/unknown payloads are answered with a bounded validation
-        // text; execution re-authorizes against current server state.
-        const outcome = await handleAdminCallback(db, adminService, update.userId, update.data);
-        if (outcome.kind === 'view') {
-          await sendTelegramMessage({
-            token: botToken,
-            chatId: update.chatId,
-            text: outcome.view.text,
-            replyMarkup: { inline_keyboard: outcome.view.keyboard.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) },
-            fetchImpl: deps.fetchImpl,
-          });
-        }
-        await answerCallbackQuery({ token: botToken, callbackQueryId: update.callbackQueryId, text: outcome.kind === 'answer' ? outcome.text : undefined, fetchImpl: deps.fetchImpl });
+        const editCall = (input: EditCall): Promise<void> => editMessageText({ ...input, fetchImpl: deps.fetchImpl });
+        const answerCall = (text?: string): Promise<unknown> =>
+          answerCallbackQuery({ token: botToken, callbackQueryId: update.callbackQueryId, ...(text !== undefined ? { text } : {}), ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}) }).catch(() => undefined);
+        const deleteCall = (messageId: number): Promise<void> =>
+          deleteMessage({ token: botToken, chatId: update.chatId, messageId, ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}) });
+        return await handleAdminPanelCallback({
+          db, botToken, nowMs, chatId: update.chatId, telegramUserId: update.userId, messageId: update.messageId, data: update.data, requestId, adminService, editCall, answerCall, deleteCall,
+        });
+      }
+      // /admin text command: open exactly one panel message per chat.
+      const adminOutcome = await handleAdminCommand(db, adminService, update.userId);
+      if (adminOutcome.kind === 'close') {
+        // Unreachable: opening the menu never closes. Fail closed if it happens.
         return Response.json({ ok: true });
       }
-      // /admin text command.
-      const outcome = await handleAdminCommand(db, adminService, update.userId);
-      const text = outcome.kind === 'view' ? outcome.view.text : outcome.text;
-      const keyboard = outcome.kind === 'view'
-        ? outcome.view.keyboard.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData })))
-        : undefined;
-      await sendTelegramMessage({
-        token: botToken,
-        chatId: update.chatId,
-        text,
-        replyMarkup: keyboard === undefined ? undefined : { inline_keyboard: keyboard },
-        fetchImpl: deps.fetchImpl,
-      });
+      if (adminOutcome.kind !== 'view') {
+        await sendTelegramMessage({ token: botToken, chatId: update.chatId, text: adminOutcome.text, fetchImpl: deps.fetchImpl });
+        return Response.json({ ok: true });
+      }
+      const internalUserId = await findInternalUserIdByTelegramId(db, update.userId).catch(() => null);
+      const editCall = (input: EditCall): Promise<void> => editMessageText({ ...input, fetchImpl: deps.fetchImpl });
+      await openAdminPanel(db, botToken, nowMs, update.chatId, update.userId, internalUserId, adminOutcome, requestId, deps.fetchImpl, editCall);
       return Response.json({ ok: true });
     } catch {
       // Telegram send failures after authorization: keep the claim (at-least-
@@ -268,6 +514,15 @@ export async function handleTelegramWebhook(
     }
   }
 
+  // Background execution: the entire conversational path (user upsert →
+  // internal-user resolution → memory/routing commands → Agent Core → AI
+  // Router → persist → Telegram delivery) runs in this closure. When
+  // deps.waitUntil is present (production), the webhook returns 200 right
+  // after the durable claim, so Telegram's ~60s webhook deadline can never
+  // cancel an in-flight provider generation. The durable state machine
+  // (claimed → generating → completed | failed) is unchanged: markGenerating
+  // remains the one-way gate that forbids regeneration on redelivery.
+  const processConversationalFlow = async (): Promise<Response> => {
   try {
     await upsertTelegramUser(
       db,
@@ -289,7 +544,8 @@ export async function handleTelegramWebhook(
     return Response.json({ error: 'Something went wrong' }, { status: 500 });
   }
 
-  if (deps.flow === undefined) {
+  const flow = deps.flow;
+  if (flow === undefined) {
     // Transport-only mode (Phase 2 semantics): send the acknowledgement and
     // release the claim on failure so redelivery reprocesses. No AI runs.
     try {
@@ -301,7 +557,6 @@ export async function handleTelegramWebhook(
     }
     return Response.json({ ok: true });
   }
-  const flow = deps.flow;
 
   let assistantText: string;
   let flowErrorKind: ConversationFlowError['kind'] | null = null;
@@ -380,4 +635,25 @@ export async function handleTelegramWebhook(
   }
 
   return Response.json({ ok: true });
+  };
+
+  if (deps.waitUntil !== undefined) {
+    // Background mode: acknowledge Telegram immediately; conversational
+    // processing (including AI generation and delivery) continues under
+    // ExecutionContext.waitUntil and can no longer be canceled by Telegram's
+    // webhook deadline. The catch-all logs with request_id only and releases
+    // the claim — the release is SQL-guarded to processing_state = 'claimed',
+    // so durable generating/completed/failed rows are never touched and
+    // redelivery can never regenerate.
+    deps.waitUntil(
+      processConversationalFlow().catch(() => {
+        console.error(JSON.stringify({ event: 'webhook_background_failed', request_id: requestId }));
+        return releaseUpdateClaim(db, update.updateId).catch(() => undefined);
+      }),
+    );
+    return Response.json({ ok: true });
+  }
+  // Synchronous fallback (no waitUntil supplied): legacy behavior, preserved
+  // for tests and non-worker callers.
+  return processConversationalFlow();
 }

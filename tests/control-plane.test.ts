@@ -78,7 +78,7 @@ describe('Control plane: /start without AI provider', () => {
     const { response, telegramFetch } = await callWebhook(textRequest(8001, 5001, 'private', '/start'));
     expect(response.status).toBe(200);
     const texts = sentTexts(telegramFetch);
-    expect(texts.some((t) => t.includes('Welcome to HawkTalk'))).toBe(true);
+    expect(texts.some((t) => t.includes('welcome to HawkTalk'))).toBe(true);
   });
 
   it('responds to /start for OWNER with admin hint', async () => {
@@ -183,7 +183,7 @@ describe('AI failure isolation', () => {
     const { response, telegramFetch } = await callWebhook(textRequest(8032, 5032, 'private', '/start'));
     expect(response.status).toBe(200);
     const texts = sentTexts(telegramFetch);
-    expect(texts.some((t) => t.includes('Welcome to HawkTalk'))).toBe(true);
+    expect(texts.some((t) => t.includes('welcome to HawkTalk'))).toBe(true);
   });
 });
 

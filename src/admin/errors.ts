@@ -20,10 +20,10 @@ export class AdminError extends Error {
 
 export const ADMIN_ERROR_TEXT: Record<AdminErrorKind, string> = {
   not_authorized: 'You are not authorized to use admin commands.',
-  not_found: 'That item no longer exists.',
-  validation_failed: 'That value is invalid. Check the format and try again.',
-  storage_failed: 'The admin service is temporarily unavailable. Try again later.',
-  conflict: 'The item changed since you loaded it. Reload and try again.',
+  not_found: 'That no longer exists — it may have been removed.',
+  validation_failed: 'That value looks invalid. Check the format and try again.',
+  storage_failed: 'The admin service is briefly unavailable. Please try again in a moment.',
+  conflict: 'This changed since you opened it. Reload and try again.',
 };
 
 export function adminErrorText(kind: AdminErrorKind): string {

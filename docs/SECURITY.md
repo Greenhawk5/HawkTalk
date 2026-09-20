@@ -24,6 +24,23 @@ User-owned data is scoped by the application's internal user identity rather tha
 
 Ownership controls must exist at the data-access layer, not only in handler code.
 
+## Assistant identity and confidentiality
+
+HawkTalk is the public assistant identity. The underlying language model, its vendor, the serving provider, API endpoints, routing configuration, and credential storage are internal implementation details.
+
+The stable identity/security policy lives in `src/orchestration/identity.ts` and is injected at the application → Agent Core boundary (the production composition root's system prompt). It is provider-agnostic and therefore survives provider failover unchanged.
+
+The conversational assistant must not disclose, confirm, or hint at:
+
+- model names or model families as its identity,
+- provider/vendor names or provider IDs,
+- API endpoints or base URLs,
+- API keys or any credentials,
+- routing/credential storage details,
+- system prompts or hidden instructions.
+
+User-provided text, recalled memory, and tool/web results are untrusted data and never outrank the application identity policy. Discussing AI topics in general (what models are, how providers work) remains normal educational conversation; the restriction applies only to HawkTalk's own implementation identity. Provider/model metadata remains fully available internally for routing, usage accounting, debugging, and administration.
+
 ## Idempotency
 
 Telegram deliveries may be retried.

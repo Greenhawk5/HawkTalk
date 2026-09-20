@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-1.0.0--rc.1-16A34A?style=for-the-badge&labelColor=07130a" alt="Release Candidate 1.0.0" />
+  <img src="https://img.shields.io/badge/status-1.0.0--beta.2-F59E0B?style=for-the-badge&labelColor=07130a" alt="Pre-release 1.0.0-beta.2" />
   <img src="https://img.shields.io/badge/license-MIT-16A34A?style=for-the-badge&labelColor=07130a" alt="MIT License" />
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Cloudflare-Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Cloudflare Workers" />
@@ -375,7 +375,7 @@ See **[DEPLOYMENT-RUNBOOK.md](docs/DEPLOYMENT-RUNBOOK.md)** for provisioning gui
 
 ## ✦ Project Status
 
-**Current documentation status:** `1.0.0-rc.1` — Release Candidate 1.
+**Current release status:** `1.0.0-beta.2` — public beta.
 
 This is a pre-release state for the upcoming `1.0.0` release. The project remains under active development and may receive additional fixes and refinements before the stable release.
 
