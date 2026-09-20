@@ -1,101 +1,272 @@
 # HawkTalk
 
 <p align="center">
-  <img src="docs/assets/README/banner-placeholder.svg" alt="HawkTalk" width="100%" />
+  <img src="docs/assets/README/banner-placeholder.png" alt="HawkTalk — Telegram-first AI assistant" width="100%" />
 </p>
 
 <p align="center">
-  <strong>A Telegram-first, provider-independent AI assistant running on Cloudflare Workers.</strong>
+  <strong>A Telegram-first, provider-independent AI assistant built for private, secure, and extensible AI conversations.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/Greenhawk5/HawkTalk">Repository</a>
-  ·
+  &nbsp;·&nbsp;
   <a href="docs/ARCHITECTURE.md">Architecture</a>
-  ·
+  &nbsp;·&nbsp;
   <a href="DEVELOPMENT.md">Development</a>
-  ·
+  &nbsp;·&nbsp;
   <a href="SECURITY.md">Security</a>
+  &nbsp;·&nbsp;
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 5.9" />
-  <img src="https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="Cloudflare Workers" />
-  <img src="https://img.shields.io/badge/D1-SQLite-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="Cloudflare D1" />
-  <img src="https://img.shields.io/badge/Vitest-4-6E9F18?style=flat-square&logo=vitest&logoColor=white" alt="Vitest" />
-  <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License" />
+  <img src="https://img.shields.io/badge/status-1.0.0--rc.1-16A34A?style=for-the-badge&labelColor=07130a" alt="Release Candidate 1.0.0" />
+  <img src="https://img.shields.io/badge/license-MIT-16A34A?style=for-the-badge&labelColor=07130a" alt="MIT License" />
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript 5.9" />
+  <img src="https://img.shields.io/badge/Cloudflare-Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Cloudflare Workers" />
 </p>
 
-> **Project status:** `1.0.0-rc.1` — Release Candidate 1.
+<p align="center">
+  <img src="https://badges.pufler.dev/visits/Greenhawk5/HawkTalk" alt="Repository visit counter" />
+</p>
 
-## Overview
+<p align="center">
+  <sub>More than a bot — a modular AI assistant designed around Telegram.</sub>
+</p>
 
-HawkTalk is a Telegram-first personal AI assistant designed around a narrow, security-conscious request path:
+---
+
+## ✦ What is HawkTalk?
+
+**HawkTalk** is a Telegram-first personal AI assistant running on **Cloudflare Workers**.
+
+Instead of coupling the bot directly to a single model provider, HawkTalk separates Telegram transport, request admission, orchestration, model routing, tools, memory, persistence, and administration into independent boundaries.
+
+That makes the system easier to test, secure, extend, and evolve without redesigning the entire application around one provider.
+
+```text
+                         ┌──────────────────────┐
+                         │       Telegram       │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │ Webhook Admission    │
+                         │ Validation / Policy  │
+                         │ Idempotency          │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │ Application / Agent  │
+                         │      Core            │
+                         └──────────┬───────────┘
+                                    │
+                    ┌───────────────┼────────────────┐
+                    ▼               ▼                ▼
+             ┌────────────┐  ┌────────────┐  ┌────────────┐
+             │ AI Router  │  │ Web Tools  │  │  Memory    │
+             │ Providers  │  │ Search /   │  │ Embeddings │
+             │            │  │ Fetch      │  │ + Vectorize│
+             └─────┬──────┘  └────────────┘  └─────┬──────┘
+                   │                                │
+                   └──────────────┬─────────────────┘
+                                  ▼
+                         ┌──────────────────────┐
+                         │ D1 + Vectorize + AI  │
+                         └──────────────────────┘
+```
+
+---
+
+## ✦ Highlights
+
+| | |
+|---|---|
+| 💬 **Telegram-first** | Designed around Telegram as the primary conversational interface. |
+| 🧠 **Provider-independent** | Agent Core is separated from model providers and protocol-specific adapters. |
+| 🔀 **Multi-provider routing** | OpenAI-compatible providers can be routed through bounded attempts and cooldown/failover logic. |
+| 🧠 **Semantic memory** | User-scoped memory powered by Workers AI embeddings and Vectorize. |
+| 🔐 **Security-focused** | Webhook verification, idempotency, encrypted credentials, SSRF protections and scoped data access. |
+| 🔎 **Research tools** | Constrained `web_search` and `web_fetch` capabilities with explicit untrusted-content boundaries. |
+| ☁️ **Cloudflare-native** | Built around Workers, D1, Vectorize and Workers AI. |
+| 🧩 **Extensible architecture** | Transport, orchestration, providers, tools, memory and persistence remain independently testable. |
+
+---
+
+## ✦ Technology Stack
+
+### Core
+
+<p>
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 5.9" />
+  <img src="https://img.shields.io/badge/Node.js-22-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 22" />
+  <img src="https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot API" />
+</p>
+
+### Cloudflare
+
+<p>
+  <img src="https://img.shields.io/badge/Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="Cloudflare Workers" />
+  <img src="https://img.shields.io/badge/D1-SQLite-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="Cloudflare D1" />
+  <img src="https://img.shields.io/badge/Vectorize-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="Cloudflare Vectorize" />
+  <img src="https://img.shields.io/badge/Workers_AI-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="Workers AI" />
+  <img src="https://img.shields.io/badge/Wrangler-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="Wrangler" />
+</p>
+
+### AI & Providers
+
+<p>
+  <img src="https://img.shields.io/badge/OpenAI--compatible-412991?style=flat-square&logo=openai&logoColor=white" alt="OpenAI-compatible providers" />
+  <img src="https://img.shields.io/badge/Agent_Core-Provider_Independent-16A34A?style=flat-square&labelColor=07130a" alt="Provider-independent Agent Core" />
+  <img src="https://img.shields.io/badge/Embeddings-bge--m3-7B61FF?style=flat-square" alt="BGE-M3 embeddings" />
+</p>
+
+### Testing & Quality
+
+<p>
+  <img src="https://img.shields.io/badge/Vitest-4-6E9F18?style=flat-square&logo=vitest&logoColor=white" alt="Vitest 4" />
+  <img src="https://img.shields.io/badge/ESLint-validated-4B32C3?style=flat-square&logo=eslint&logoColor=white" alt="ESLint" />
+  <img src="https://img.shields.io/badge/npm_audit-security-CB3837?style=flat-square&logo=npm&logoColor=white" alt="npm audit" />
+  <img src="https://img.shields.io/badge/Wrangler-dry--run-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="Wrangler dry-run" />
+</p>
+
+---
+
+## ✦ Core Capabilities
+
+### Telegram & Request Processing
+
+- Secure Telegram webhook verification.
+- Bounded request parsing and validation.
+- Private-chat-only conversational processing.
+- Durable update idempotency.
+- Policy checks, rate limits, quotas and abuse handling.
+- Confirmation flows and audit logging.
+
+### Agent Core & Providers
+
+- Provider-independent application-level Agent Core.
+- Common OpenAI-compatible adapter.
+- Multiple provider credentials.
+- Bounded routing attempts.
+- Cooldown and failover behavior.
+- Provider credentials encrypted before D1 storage.
+
+### Research & Web Tools
+
+HawkTalk can use constrained research tools for external information retrieval.
+
+Tool execution is bounded by:
+
+- validated inputs,
+- network restrictions,
+- fetch limits,
+- output-size limits,
+- retry limits,
+- SSRF protections,
+- explicit untrusted-content boundaries.
+
+External pages and tool results are treated as **untrusted data**, not as system instructions.
+
+### Semantic Memory
+
+HawkTalk keeps conversational persistence and semantic memory as separate concerns.
+
+```text
+                Workers AI
+             @cf/baai/bge-m3
+                     │
+                     ▼
+                 Embedding
+                     │
+                     ▼
+                 Vectorize
+                     │
+                     ↕
+              D1 Memory Metadata
+```
+
+Memory is user-scoped and degrades gracefully if the required AI or Vectorize capability is unavailable.
+
+---
+
+## ✦ Architecture
+
+The application is intentionally divided into clear boundaries:
 
 ```text
 Telegram
-   ↓
-Webhook admission
-   ↓
-Validation + idempotency + policy
-   ↓
-Application orchestration
-   ↓
+   │
+   ▼
+Webhook / Admission
+   │
+   ├── Authentication
+   ├── Validation
+   ├── Idempotency
+   └── Policy
+   │
+   ▼
+Application Orchestration
+   │
+   ▼
 Provider-independent Agent Core
-   ↓
-AI Router / OpenAI-compatible providers
-   ├── Web research tools
-   └── Semantic memory
-   ↓
-D1 + Vectorize + Workers AI
-   ↓
-Telegram response
+   │
+   ├── AI Router
+   │    └── OpenAI-compatible providers
+   │
+   ├── Research Tools
+   │    ├── web_search
+   │    └── web_fetch
+   │
+   └── Semantic Memory
+        ├── Workers AI
+        └── Vectorize
+   │
+   ▼
+D1 Persistence
+   │
+   ▼
+Telegram Response
 ```
 
-The project deliberately separates transport, admission, orchestration, model invocation, tools, memory, persistence, and administration so each boundary can be tested independently.
+For the full architecture, request lifecycle, persistence boundaries, provider model and security boundaries, see:
 
-## Implemented capabilities
+**[Architecture Documentation →](docs/ARCHITECTURE.md)**
 
-* Secure Telegram webhook verification and bounded request parsing.
-* Private-chat-only conversational processing.
-* Durable Telegram update idempotency.
-* Owner-scoped conversations and messages in Cloudflare D1.
-* Provider-independent Agent Core.
-* OpenAI-compatible multi-provider routing with multiple credentials, bounded attempts, and cooldown/failover behavior.
-* Encrypted provider credentials stored in D1.
-* Role-aware admission controls, quotas, rate limits, abuse handling, confirmations, and audit logging.
-* Read-only `web_search` and `web_fetch` tooling with strict bounds and SSRF protections.
-* Research mode with explicitly untrusted external context.
-* Explicit memory commands and semantic memory using Workers AI `@cf/baai/bge-m3` plus Vectorize.
-* Usage and cost recording.
-* Cloudflare-native local development and automated validation with Vitest.
+---
 
-## Architecture
+## ✦ Security
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the complete layer model, request lifecycle, persistence boundaries, provider architecture, tools, and security boundaries.
+Security is treated as an architectural concern rather than a final checklist.
 
-## Technology
+Implemented controls include:
 
-| Area               | Current implementation                          |
-| ------------------ | ----------------------------------------------- |
-| Runtime            | Cloudflare Workers                              |
-| Language           | TypeScript                                      |
-| Relational storage | Cloudflare D1 / SQLite                          |
-| Semantic vectors   | Cloudflare Vectorize                            |
-| Embeddings         | Workers AI `@cf/baai/bge-m3`                    |
-| Messaging          | Telegram Bot API                                |
-| Model protocol     | OpenAI-compatible chat completions              |
-| Testing            | Vitest + `@cloudflare/vitest-pool-workers`      |
-| Validation         | TypeScript, ESLint, Wrangler dry-run, npm audit |
+- Telegram webhook authentication.
+- Durable idempotency protection.
+- User-scoped conversations and messages.
+- Encrypted provider credentials using AES-GCM.
+- Role-aware admission controls.
+- Rate limiting and abuse handling.
+- SSRF protection for external fetching.
+- Bounded external tool execution.
+- Explicit separation of trusted instructions from untrusted research content.
+- Audit logging.
+- Secrets kept outside source control.
 
-## Quick start
+See **[SECURITY.md](SECURITY.md)** for the security policy and vulnerability-reporting process.
+
+---
+
+## ✦ Quick Start
 
 ### Requirements
 
-* Node.js `>=22.13.0 <23`
-* npm
-* Wrangler
-* A local development configuration copied from `.dev.vars.example`
+- Node.js `>=22.13.0 <23`
+- npm
+- Wrangler
+- A local configuration based on `.dev.vars.example`
 
 ### Installation
 
@@ -108,128 +279,130 @@ npm run db:migrate:local
 npm run dev
 ```
 
-On non-PowerShell shells, copy `.dev.vars.example` to `.dev.vars` with the equivalent command.
+For non-PowerShell shells, copy `.dev.vars.example` to `.dev.vars` using the equivalent command.
 
-`.dev.vars` is local-only and must never be committed.
+> `.dev.vars` is local-only and must never be committed.
 
-## Development commands
+---
 
-```bash
-npm run dev                 # Start local Wrangler development
-npm run db:migrate:local    # Apply D1 migrations to local state
-npm run types               # Generate Wrangler environment types
-npm run typecheck           # TypeScript validation
-npm run lint                # ESLint with zero warnings allowed
-npm test                    # Test suite
-npm run build               # Wrangler dry-run build
-npm run security            # npm audit
-npm run check               # Full validation pipeline
-```
+## ✦ Development Commands
+
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Start local Wrangler development |
+| `npm run db:migrate:local` | Apply D1 migrations to local state |
+| `npm run types` | Generate Wrangler environment types |
+| `npm run typecheck` | TypeScript validation |
+| `npm run lint` | ESLint with zero warnings allowed |
+| `npm test` | Run the test suite |
+| `npm run build` | Wrangler dry-run build |
+| `npm run security` | Run `npm audit` |
+| `npm run check` | Full validation pipeline |
 
 `npm run check` is the repository's aggregate quality gate.
 
-## Configuration and secrets
+---
+
+## ✦ Configuration & Secrets
 
 Development secrets are represented in `.dev.vars.example` and loaded from the ignored `.dev.vars` file.
 
-Production secrets are configured separately with Wrangler and are never stored in source control.
+Current secret categories include:
 
-The current secret categories include:
+- Telegram bot token.
+- Telegram webhook verification secret.
+- Provider-credential encryption master secret.
+- Owner bootstrap identity.
 
-* Telegram bot token
-* Telegram webhook verification secret
-* Provider-credential encryption master secret
-* Owner bootstrap identity
+Production secrets are configured separately through Wrangler.
 
-Never place a real token, API key, encryption key, private URL, or credential in Git, issues, screenshots, logs, or Telegram messages.
+**Never commit or expose:**
 
-## Providers
+```text
+API keys
+Bot tokens
+Encryption keys
+Private URLs
+Credentials
+Production secrets
+```
 
-HawkTalk uses a provider-neutral Agent Core and a common OpenAI-compatible provider adapter. Current architecture documentation describes support for providers such as OpenRouter, Z.AI, and Google Gemini through compatible endpoints.
+---
+
+## ✦ Providers
+
+HawkTalk uses a provider-neutral Agent Core and a common OpenAI-compatible provider adapter.
+
+The current architecture is designed to support compatible providers such as:
+
+- OpenRouter
+- Z.AI
+- Google Gemini
 
 Provider credentials are:
 
-1. entered through the dedicated provisioning workflow,
-2. sealed with AES-GCM before D1 storage,
+1. entered through the provisioning workflow,
+2. encrypted before D1 storage,
 3. kept outside Telegram chat history,
-4. never printed in ordinary logs,
+4. excluded from ordinary logs,
 5. selected through bounded routing and cooldown logic.
 
-See [docs/DEPLOYMENT-RUNBOOK.md](docs/DEPLOYMENT-RUNBOOK.md) for provisioning guidance.
+See **[DEPLOYMENT-RUNBOOK.md](docs/DEPLOYMENT-RUNBOOK.md)** for provisioning guidance.
 
-## Research and tools
+---
 
-Research mode uses a deliberately constrained tool layer.
+## ✦ Documentation
 
-Tool execution is bounded by:
+| Document | Purpose |
+|---|---|
+| [Architecture](docs/ARCHITECTURE.md) | System architecture and security boundaries |
+| [Development](DEVELOPMENT.md) | Local development and contribution workflow |
+| [Testing](TESTING.md) | Test strategy and validation |
+| [Deployment](DEPLOYMENT.md) | Deployment overview |
+| [Security](SECURITY.md) | Security policy and vulnerability reporting |
+| [Contributing](CONTRIBUTING.md) | Contribution standards |
+| [Code of Conduct](CODE_OF_CONDUCT.md) | Community standards |
+| [Support](SUPPORT.md) | Support and issue reporting |
+| [Changelog](CHANGELOG.md) | Release history |
+| [Notice](NOTICE.md) | Third-party notices and attribution |
+| [Citation](CITATION.cff) | Citation metadata |
+| [Repository Hardening](REPOSITORY_HARDENING.md) | Repository hardening checklist |
+| [Deployment Runbook](docs/DEPLOYMENT-RUNBOOK.md) | Human-controlled production runbook |
+| [Smoke Tests](docs/SMOKE-TESTS.md) | Post-deployment verification |
+| [Rollback](docs/ROLLBACK.md) | Operational rollback procedures |
 
-* validated tool inputs,
-* network restrictions,
-* fetch limits,
-* output-size limits,
-* retry limits,
-* SSRF protection,
-* explicit untrusted-content boundaries.
+---
 
-External pages and tool results must never be treated as trusted system instructions.
+## ✦ Project Status
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
+**Current documentation status:** `1.0.0-rc.1` — Release Candidate 1.
 
-## Memory
+This is a pre-release state for the upcoming `1.0.0` release. The project remains under active development and may receive additional fixes and refinements before the stable release.
 
-HawkTalk separates durable conversation history from semantic memory.
+---
 
-Semantic memory uses:
-
-```text
-Workers AI
-  @cf/baai/bge-m3
-        ↓
-   embeddings
-        ↓
-   Vectorize
-        ↕
-D1 memory metadata
-```
-
-Memory is always user-scoped. If the required AI or Vectorize capability is unavailable, memory degrades gracefully without breaking ordinary conversation.
-
-## Documentation map
-
-| Document                                                         | Purpose                                     |
-| ---------------------------------------------------------------- | ------------------------------------------- |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md)                          | System architecture and boundaries          |
-| [DEVELOPMENT.md](DEVELOPMENT.md)                                 | Local development and contribution workflow |
-| [TESTING.md](TESTING.md)                                         | Test strategy and validation                |
-| [DEPLOYMENT.md](DEPLOYMENT.md)                                   | Deployment overview                         |
-| [SECURITY.md](SECURITY.md)                                       | Security policy and vulnerability reporting |
-| [CONTRIBUTING.md](CONTRIBUTING.md)                               | Contribution standards                      |
-| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)                         | Community standards                         |
-| [SUPPORT.md](SUPPORT.md)                                         | Support and issue-reporting guidance        |
-| [CHANGELOG.md](CHANGELOG.md)                                     | Release history                             |
-| [NOTICE.md](NOTICE.md)                                           | Third-party notices and project attribution |
-| [CITATION.cff](CITATION.cff)                                     | Citation metadata                           |
-| [REPOSITORY_HARDENING.md](REPOSITORY_HARDENING.md)               | Repository-level hardening checklist        |
-| [docs/IMPLEMENTATION-ROADMAP.md](docs/IMPLEMENTATION-ROADMAP.md) | Implementation history and roadmap          |
-| [docs/DEPLOYMENT-RUNBOOK.md](docs/DEPLOYMENT-RUNBOOK.md)         | Human-controlled production runbook         |
-| [docs/SMOKE-TESTS.md](docs/SMOKE-TESTS.md)                       | Post-deployment verification                |
-| [docs/ROLLBACK.md](docs/ROLLBACK.md)                             | Operational rollback procedures             |
-
-## Repository status
-
-HawkTalk `1.0.0-rc.1` is the first Release Candidate for the upcoming `1.0.0` release.
-
-The project remains under active development. Release Candidate status means the current implementation is being prepared for stable release and may still receive fixes before `1.0.0`.
-
-## License
+## ✦ License
 
 HawkTalk is released under the **MIT License**.
 
 See the [LICENSE](LICENSE) file for the complete license text.
 
-## Author
+---
 
-**Ali Faniani / GreenHawk**
+## ✦ Author
 
-* GitHub: https://github.com/Greenhawk5
-* Repository: https://github.com/Greenhawk5/HawkTalk
+<p align="center">
+  <strong>Ali Faniani / GreenHawk</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Greenhawk5">GitHub</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/Greenhawk5/HawkTalk">HawkTalk Repository</a>
+</p>
+
+---
+
+<p align="center">
+  <sub>Built with TypeScript, Cloudflare Workers, D1, Vectorize, Workers AI and Telegram.</sub>
+</p>
