@@ -10,19 +10,44 @@ export interface TelegramUserInput {
   displayName: string | null;
 }
 
-export async function upsertTelegramUser(db: D1Database, input: TelegramUserInput, now: string): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO users (telegram_user_id, username, display_name, status, created_at, updated_at, last_seen)
-       VALUES (?, ?, ?, 'active', ?, ?, ?)
-       ON CONFLICT (telegram_user_id) DO UPDATE SET
-         username = excluded.username,
-         display_name = excluded.display_name,
-         updated_at = excluded.updated_at,
-         last_seen = excluded.last_seen`,
-    )
-    .bind(input.telegramUserId, input.username, input.displayName, now, now, now)
-    .run();
+export async function upsertTelegramUser(db: D1Database, input: TelegramUserInput, now: string, ownerTelegramId?: string): Promise<void> {
+  const isOwner = typeof ownerTelegramId === 'string' && ownerTelegramId.length > 0 && String(input.telegramUserId) === ownerTelegramId;
+  if (isOwner) {
+    await db
+      .prepare(
+        `INSERT INTO users (telegram_user_id, username, display_name, role, status, created_at, updated_at, last_seen)
+         VALUES (?, ?, ?, 'OWNER', 'active', ?, ?, ?)
+         ON CONFLICT (telegram_user_id) DO UPDATE SET
+           username = excluded.username,
+           display_name = excluded.display_name,
+           role = CASE WHEN excluded.role = 'OWNER' THEN 'OWNER' ELSE users.role END,
+           updated_at = excluded.updated_at,
+           last_seen = excluded.last_seen`,
+      )
+      .bind(input.telegramUserId, input.username, input.displayName, now, now, now)
+      .run();
+  } else {
+    await db
+      .prepare(
+        `INSERT INTO users (telegram_user_id, username, display_name, role, status, created_at, updated_at, last_seen)
+         VALUES (?, ?, ?, 'USER', 'active', ?, ?, ?)
+         ON CONFLICT (telegram_user_id) DO UPDATE SET
+           username = excluded.username,
+           display_name = excluded.display_name,
+           updated_at = excluded.updated_at,
+           last_seen = excluded.last_seen`,
+      )
+      .bind(input.telegramUserId, input.username, input.displayName, now, now, now)
+      .run();
+  }
+}
+
+export async function getTelegramUserRole(db: D1Database, telegramUserId: number): Promise<string | null> {
+  const row = await db
+    .prepare('SELECT role FROM users WHERE telegram_user_id = ?')
+    .bind(telegramUserId)
+    .first<{ role: string }>();
+  return row?.role ?? null;
 }
 
 export async function countUsersByTelegramId(db: D1Database, telegramUserId: number): Promise<number> {

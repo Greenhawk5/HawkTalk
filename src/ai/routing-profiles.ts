@@ -52,12 +52,28 @@ export function resolveRoutingProfile(profile: unknown, inputs: RoutingProfileIn
   const normalized: RoutingProfile = isRoutingProfile(profile) ? profile : 'DEFAULT';
   const requested = inputs.model;
   if (normalized === 'DEFAULT' || normalized === 'RESEARCH') {
-    return {
-      profile: normalized,
-      model: requested,
-      outputMultiplier: normalized === 'RESEARCH' ? 2 : 1,
-      enableWebTools: normalized === 'RESEARCH',
-    };
+    const outputMultiplier = normalized === 'RESEARCH' ? 2 : 1;
+    const enableWebTools = normalized === 'RESEARCH';
+    // productionFlow passes the bare sentinel "router" for normal chat. The
+    // router's bare-model path would otherwise send the literal string
+    // "router" as the vendor model (upstream 400 model-not-found). Translate
+    // the sentinel to the highest-weight enabled provider with an EMPTY model
+    // part, so the router resolves that provider's default_model. Only the
+    // exact sentinel is translated: any other bare model id keeps the
+    // documented "bare vendor model on the highest-weight provider" behavior,
+    // and explicit "id:model" / "id:" references are untouched.
+    if (requested === 'router') {
+      const enabled = [...inputs.providers]
+        .filter((entry) => entry.enabled)
+        .sort((a, b) => b.weight - a.weight || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const pick = enabled[0];
+      if (pick !== undefined) {
+        return { profile: normalized, model: `${pick.id}:`, outputMultiplier, enableWebTools };
+      }
+      // No enabled provider: leave unchanged — the router then fails with its
+      // existing generic 'unavailable' semantics.
+    }
+    return { profile: normalized, model: requested, outputMultiplier, enableWebTools };
   }
   const separator = requested.indexOf(':');
   if (separator > 0 && /^[a-z0-9-]+$/.test(requested.slice(0, separator))) {

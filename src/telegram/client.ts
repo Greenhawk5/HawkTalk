@@ -53,7 +53,8 @@ export interface TelegramInlineKeyboard {
 }
 
 export async function sendTelegramMessage(options: SendTelegramMessageOptions): Promise<void> {
-  const { token, chatId, fetchImpl = globalThis.fetch, timeoutMs = TELEGRAM_SEND_TIMEOUT_MS } = options;
+  const { token, chatId, timeoutMs = TELEGRAM_SEND_TIMEOUT_MS } = options;
+  const fetchImpl: typeof fetch = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args));
   const text = options.text.length > MAX_MESSAGE_CHARS ? `${options.text.slice(0, MAX_MESSAGE_CHARS - 1)}…` : options.text;
   const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
   const body: Record<string, unknown> = { chat_id: chatId, text };
@@ -105,7 +106,8 @@ export interface AnswerCallbackQueryOptions {
  * text never contains secrets or internal error details.
  */
 export async function answerCallbackQuery(options: AnswerCallbackQueryOptions): Promise<void> {
-  const { token, callbackQueryId, fetchImpl = globalThis.fetch, timeoutMs = TELEGRAM_SEND_TIMEOUT_MS } = options;
+  const { token, callbackQueryId, timeoutMs = TELEGRAM_SEND_TIMEOUT_MS } = options;
+  const fetchImpl = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args));
   const url = `${TELEGRAM_API_BASE}/bot${token}/answerCallbackQuery`;
   const body: Record<string, unknown> = { callback_query_id: callbackQueryId };
   if (typeof options.text === 'string' && options.text.length > 0) {

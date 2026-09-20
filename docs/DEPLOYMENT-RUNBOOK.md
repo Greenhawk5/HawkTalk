@@ -1,4 +1,4 @@
-# HawkTalk Deployment Runbook
+﻿# HawkTalk Deployment Runbook
 
 Human-only deployment procedure for first production release.
 No step in this document should be executed by automated tooling.
@@ -178,7 +178,28 @@ npx tsc --noEmit
 
 ---
 
-## STEP F - Human Git Commit/Push
+## STEP F - Provision AI Providers and Credentials (human)
+
+Provider/credential data lives in D1, encrypted at rest with `CREDENTIAL_MASTER_SECRET` (STEP C). Never send an API key through Telegram chat history or as a command-line argument. Use the committed provisioning CLI, which reads secrets from hidden stdin and seals them with the same AES-GCM `sealCredential` the Worker uses to decrypt:
+
+```bash
+# 1. Create a provider (no secrets involved; args are safe):
+node --experimental-strip-types scripts/provision.mjs provider openrouter https://openrouter.ai/api/v1 anthropic/claude-sonnet-4 500 --env production
+
+# 2. Add a credential (key + master secret entered at hidden prompts, masked with *):
+node --experimental-strip-types scripts/provision.mjs credential openrouter "primary key" 100 --env production
+#    - when prompted, paste the API key (input is hidden), then Enter
+#    - enter CREDENTIAL_MASTER_SECRET (or export HAWKTALK_CREDENTIAL_MASTER_SECRET first)
+
+# 3. Repeat step 2 to add more keys to the same provider (rotation/quota distribution).
+```
+
+Notes:
+- Default (non-`--execute`) mode prints a `wrangler d1 execute` command containing ciphertext only; run it yourself, or pass `--execute` to let the script run wrangler (nothing enters your shell history).
+- The plaintext key is never logged, stored, audited, or sent through Telegram; only the versioned `v1.<salt>.<iv>.<ciphertext>` envelope reaches D1.
+- Rotation: add a new credential, disable the old one in the Admin CMS (`/admin`), then delete it as OWNER.
+- Verify: `npx wrangler d1 execute DB --env production --remote --command "SELECT id, label, weight, enabled FROM provider_credentials;"` (metadata only; ciphertext is never displayed by the Admin CMS).
+## STEP G - Human Git Commit/Push
 
 ```bash
 git add -A
@@ -192,7 +213,7 @@ git push origin main
 
 ---
 
-## STEP G - Human Deploy
+## STEP H - Human Deploy
 
 ```bash
 wrangler deploy --env production
@@ -207,7 +228,7 @@ Or if using a custom domain, configure it in the Cloudflare Dashboard after depl
 
 ---
 
-## STEP H - Human Register Telegram Webhook
+## STEP I - Human Register Telegram Webhook
 
 After the Worker is deployed and accessible at its production URL, register the webhook with Telegram.
 
@@ -248,13 +269,13 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/deleteWebhook"
 
 ---
 
-## STEP I - Production Smoke Tests
+## STEP J - Production Smoke Tests
 
 Execute the checklist in [docs/SMOKE-TESTS.md](./SMOKE-TESTS.md) immediately after webhook registration.
 
 ---
 
-## STEP J - Rollback Procedure
+## STEP K - Rollback Procedure
 
 See [docs/ROLLBACK.md](./ROLLBACK.md) for the complete rollback process.
 
@@ -274,10 +295,10 @@ See [docs/ROLLBACK.md](./ROLLBACK.md) for the complete rollback process.
 Production diagnostics use structured JSON logging with request correlation:
 
 - Every request gets a unique `X-Request-ID` header (UUID v4, generated in `src/index.ts:6`)
-- All log entries include `{ event, request_id }` — no user content, tokens, or secrets
+- All log entries include `{ event, request_id }` â€” no user content, tokens, or secrets
 - Log event categories: `webhook_*`, `request_failed`, `provider_*`, `memory_*`, `admin_*`
 - Usage tracking: one `usage_events` row per successful AI generation (idempotent by request ID)
-- Error responses are always generic ("Something went wrong") — internal details stay in logs only
+- Error responses are always generic ("Something went wrong") â€” internal details stay in logs only
 - Security headers on every response: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'`, `Referrer-Policy: no-referrer`
 
 Monitor via Cloudflare Workers logs dashboard or `wrangler tail --env production`.

@@ -1,4 +1,4 @@
-// Phase 9 admin provider/credential management. Metadata only: these helpers
+﻿// Phase 9 admin provider/credential management. Metadata only: these helpers
 // never return secret_ciphertext. Mutations are guarded single-row updates.
 
 import type { ProviderRow } from './providers';
@@ -97,3 +97,11 @@ export async function countCredentials(db: D1Database): Promise<number> {
   const row = await db.prepare('SELECT COUNT(*) AS count FROM provider_credentials').first<{ count: number }>();
   return row?.count ?? 0;
 }
+
+// Provider/credential create/update mutations are executed exclusively through
+// applyAdminMutation (src/db/admin-mutations.ts): one atomic batch that applies
+// the mutation with the SQL-level ADMIN/OWNER actor guard and writes the audit
+// record, rolling back together on failure. Do NOT add direct insert/update
+// helpers here â€” they would create a second, non-atomic mutation path.
+//
+// The shared value shapes live in src/admin/provisioning.ts.

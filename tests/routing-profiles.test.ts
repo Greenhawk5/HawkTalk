@@ -20,14 +20,31 @@ describe('routing profiles', () => {
     }
   });
 
-  it('keeps DEFAULT semantics exactly: model, budget, and tools unchanged', () => {
-    const providers = [{ id: 'b', enabled: true, weight: 10 }];
+  it('translates the bare sentinel "router" to the highest-weight enabled provider under DEFAULT', () => {
+    const providers = [
+      { id: 'b', enabled: true, weight: 10 },
+      { id: 'a', enabled: true, weight: 90 },
+    ];
     expect(resolveRoutingProfile('DEFAULT', { model: 'router', providers })).toEqual({
-      profile: 'DEFAULT', model: 'router', outputMultiplier: 1, enableWebTools: false,
+      profile: 'DEFAULT', model: 'a:', outputMultiplier: 1, enableWebTools: false,
     });
-    // Unknown/junk profiles degrade to DEFAULT instead of throwing.
+  });
+
+  it('keeps non-sentinel DEFAULT semantics exactly: model, budget, and tools unchanged', () => {
+    const providers = [{ id: 'b', enabled: true, weight: 10 }];
+    expect(resolveRoutingProfile('DEFAULT', { model: 'vendor-m', providers })).toEqual({
+      profile: 'DEFAULT', model: 'vendor-m', outputMultiplier: 1, enableWebTools: false,
+    });
+    // Explicit selections stay verbatim under DEFAULT too.
+    expect(resolveRoutingProfile('DEFAULT', { model: 'b:custom', providers }).model).toBe('b:custom');
+    expect(resolveRoutingProfile('DEFAULT', { model: 'b:', providers }).model).toBe('b:');
+  });
+
+  it('degrades junk profiles to DEFAULT, which still translates the sentinel', () => {
+    const providers = [{ id: 'b', enabled: true, weight: 10 }];
     expect(resolveRoutingProfile('TURBO', { model: 'router', providers }).profile).toBe('DEFAULT');
-    expect(resolveRoutingProfile(undefined, { model: 'router', providers }).model).toBe('router');
+    expect(resolveRoutingProfile('TURBO', { model: 'router', providers }).model).toBe('b:');
+    expect(resolveRoutingProfile(undefined, { model: 'router', providers }).model).toBe('b:');
   });
 
   it('preserves explicit provider selections verbatim under FAST/COMPLEX', () => {
@@ -58,11 +75,17 @@ describe('routing profiles', () => {
     expect(resolveRoutingProfile('COMPLEX', { model: 'router', providers: [] }).model).toBe('router');
   });
 
-  it('gives RESEARCH double budget plus web tools, without changing routing', () => {
+  it('gives RESEARCH double budget plus web tools, with the sentinel translated', () => {
     const providers = [{ id: 'b', enabled: true, weight: 10 }];
     expect(resolveRoutingProfile('RESEARCH', { model: 'router', providers })).toEqual({
-      profile: 'RESEARCH', model: 'router', outputMultiplier: 2, enableWebTools: true,
+      profile: 'RESEARCH', model: 'b:', outputMultiplier: 2, enableWebTools: true,
     });
+  });
+
+  it('leaves the sentinel unchanged when no enabled provider exists (existing router error semantics)', () => {
+    const disabled = [{ id: 'a', enabled: false, weight: 1 }];
+    expect(resolveRoutingProfile('DEFAULT', { model: 'router', providers: disabled }).model).toBe('router');
+    expect(resolveRoutingProfile('RESEARCH', { model: 'router', providers: [] }).model).toBe('router');
   });
 
   it('restricts research tools to the read-only web allowlist', () => {

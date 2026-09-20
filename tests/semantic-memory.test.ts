@@ -119,8 +119,8 @@ describe('SemanticMemoryService', () => {
 
     const hits = await svc.recall(1, 'what theme do I like?');
     expect(hits.length).toBe(1);
-    expect(hits[0].content).toBe('dark mode preference');
-    expect(hits[0].score).toBe(0.9);
+    expect(hits[0]?.content).toBe('dark mode preference');
+    expect(hits[0]?.score).toBe(0.9);
   });
 
   it('wraps recalled content in untrusted_memory delimiters', async () => {

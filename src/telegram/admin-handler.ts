@@ -9,8 +9,11 @@ import type { AdminService } from '../admin/service';
 import { AdminError, adminErrorText } from '../admin/errors';
 import {
   parseAdminCallback,
+  renderAddCredentialInstructions,
+  renderAddProviderInstructions,
   renderConfirmation,
   renderDashboard,
+  renderEditProviderField,
   renderMenu,
   renderPolicy,
   renderProviderDetail,
@@ -131,6 +134,19 @@ async function executeAdminCallback(adminService: AdminService, actorUserId: num
       return { kind: 'view', view: renderRouting(await adminService.getRoutingProfiles(actorUserId)) };
     case 'credentials':
       return { kind: 'answer', text: adminErrorText('validation_failed') };
+    case 'addprov':
+      return { kind: 'view', view: renderAddProviderInstructions() };
+    case 'editprov': {
+      const detail = await adminService.inspectProvider(actorUserId, cb.providerId);
+      const currentValue = cb.field === 'baseUrl' ? detail.baseUrl
+        : cb.field === 'defaultModel' ? detail.defaultModel
+        : cb.field === 'weight' ? String(detail.weight)
+        : cb.field === 'timeoutMs' ? String(detail.timeoutMs)
+        : String(detail.maxCredentialAttempts);
+      return { kind: 'view', view: renderEditProviderField(cb.providerId, cb.field, currentValue) };
+    }
+    case 'addcred':
+      return { kind: 'view', view: renderAddCredentialInstructions(cb.providerId) };
     default: {
       // Exhaustiveness guard: the grammar and this switch must stay in sync.
       const exhaustive: never = cb;

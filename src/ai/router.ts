@@ -2,7 +2,31 @@ import { ProviderError } from '../agent/errors';
 import type { ModelProvider, ProviderGenerateInput, ProviderGenerateResult } from '../agent/provider';
 import { listEnabledProviders, type ProviderRow } from '../db/providers';
 import { OpenAICompatibleAdapter } from './adapter';
+import { OPENAI_CHAT_COMPLETIONS_PATH } from './adapter';
 import { resolveCredentialPlaintext, type CredentialStore, type StoredCredential } from './credentials';
+
+// TEMP-DIAGNOSTIC (remove after production triage): URL endpoint metadata for
+// failure logs — hostname + pathname only, never query, keys, or bodies.
+function endpointMeta(baseUrl: string): { endpoint_host?: string; endpoint_path?: string } {
+  try {
+    const parsed = new URL(`${baseUrl.replace(/\/+$/, '')}${OPENAI_CHAT_COMPLETIONS_PATH}`);
+    return { endpoint_host: parsed.hostname.slice(0, 128), endpoint_path: parsed.pathname.slice(0, 128) };
+  } catch {
+    return {};
+  }
+}
+
+// TEMP-DIAGNOSTIC (remove after production triage): bounded metadata from a
+// ProviderError — generic code, status, phase, content-type, and the adapter's
+// already-sanitized (printable-ASCII, ≤200 char) detail. Re-truncated here.
+function errorMeta(error: ProviderError): Record<string, unknown> {
+  const meta: Record<string, unknown> = { code: error.code };
+  if (error.phase !== undefined) meta['failure_phase'] = error.phase;
+  if (error.httpStatus !== undefined) meta['http_status'] = error.httpStatus;
+  if (error.contentType !== undefined) meta['content_type'] = String(error.contentType).slice(0, 64);
+  if (error.detail !== undefined) meta['detail'] = String(error.detail).slice(0, 200);
+  return meta;
+}
 
 // AI Router (Phase 4): a ModelProvider that selects providers/credentials,
 // applies health-gated ordering, and fails over on retryable failures.
@@ -163,6 +187,13 @@ interface ResolvedTarget {
   provider: ProviderDirectoryEntry;
   vendorModel: string;
   providers: ProviderDirectoryEntry[];
+  /**
+   * Per-provider-default routing (empty model part, e.g. "openrouter:").
+   * Every enabled provider is a failover candidate and EACH attempt resolves
+   * the vendor model from that candidate's own defaultModel — the anchor
+   * provider's defaultModel is never reused for another provider.
+   */
+  perProviderDefault?: true;
 }
 
 export class AIRouter implements ModelProvider {
@@ -201,7 +232,15 @@ export class AIRouter implements ModelProvider {
       const remainder = model.slice(separator + 1);
       const provider = providers.find((entry) => entry.id === providerId);
       if (!provider) return null;
-      return { provider, vendorModel: remainder.length > 0 ? remainder : provider.defaultModel, providers: [provider] };
+      if (remainder.length > 0) {
+        // Explicit provider + explicit model: single-provider candidate list,
+        // no cross-provider failover.
+        return { provider, vendorModel: remainder, providers: [provider] };
+      }
+      // Empty model part: the resolved default of the anchor provider becomes
+      // the first attempt's vendor model, but ALL enabled providers remain
+      // candidates for failover, each using its own defaultModel.
+      return { provider, vendorModel: provider.defaultModel, providers, perProviderDefault: true };
     }
     if (providers.length === 0) return null;
     const first = providers[0] as ProviderDirectoryEntry;
@@ -216,15 +255,26 @@ export class AIRouter implements ModelProvider {
 
     const providers = await this.directory.listEnabledProviders().catch(() => [] as ProviderDirectoryEntry[]);
     const target = this.resolveTarget(input.model, providers);
-    if (target === null) throw new ProviderError('unavailable');
+    if (target === null) {
+      // TEMP-DIAGNOSTIC (remove after production triage): metadata only.
+      console.error(JSON.stringify({ event: 'router_no_target', request_id: input.requestId.slice(0, 128), model: input.model.slice(0, 128), enabled_providers: providers.length }));
+      throw new ProviderError('unavailable');
+    }
+    // TEMP-DIAGNOSTIC (remove after production triage): metadata only.
+    console.error(JSON.stringify({ event: 'router_target', request_id: input.requestId.slice(0, 128), provider_id: target.provider.id, model: target.vendorModel.slice(0, 128), candidates: target.providers.length }));
 
     let attempts = 0;
     let lastError: ProviderError = new ProviderError('unavailable');
 
     for (const provider of target.providers) {
+      // Per-provider-default routing: each candidate uses its OWN defaultModel;
+      // every other mode keeps the single resolved vendorModel.
+      const vendorModel = target.perProviderDefault === true ? provider.defaultModel : target.vendorModel;
       const credentials = await this.credentialStore.listCredentials(provider.id).catch(() => [] as StoredCredential[]);
       const ordered = orderCredentials(credentials, this.health, this.nowMs());
       const budget = Math.min(provider.maxCredentialAttempts, ordered.length);
+      // TEMP-DIAGNOSTIC (remove after production triage): metadata only.
+      console.error(JSON.stringify({ event: 'router_credentials', request_id: input.requestId.slice(0, 128), provider_id: provider.id, model: vendorModel.slice(0, 128), credentials: ordered.length, budget }));
       for (let i = 0; i < budget; i += 1) {
         if (attempts >= this.maxAttempts) break;
         const credential = ordered[i] as StoredCredential;
@@ -234,6 +284,8 @@ export class AIRouter implements ModelProvider {
         try {
           apiKey = await resolveCredentialPlaintext(credential.ciphertext, this.masterSecret);
         } catch {
+          // TEMP-DIAGNOSTIC (remove after production triage): metadata only.
+          console.error(JSON.stringify({ event: 'credential_decrypt_failed', request_id: input.requestId.slice(0, 128), provider_id: provider.id, credential_id: credential.id }));
           this.health.cooldown(credential.id, this.nowMs() + this.cooldowns.invalidCredentialMs);
           lastError = new ProviderError('unavailable');
           continue;
@@ -248,16 +300,24 @@ export class AIRouter implements ModelProvider {
         });
 
         try {
-          return await adapter.generate({ ...input, model: target.vendorModel });
+          return await adapter.generate({ ...input, model: vendorModel });
         } catch (error) {
           if (!(error instanceof ProviderError)) {
+            // TEMP-DIAGNOSTIC (remove after production triage): metadata only.
+            console.error(JSON.stringify({ event: 'provider_attempt_failed', request_id: input.requestId.slice(0, 128), provider_id: provider.id, credential_id: credential.id, model: vendorModel.slice(0, 128), ...endpointMeta(provider.baseUrl), code: 'non_provider_error', name: error instanceof Error ? error.name : typeof error }));
             lastError = new ProviderError('upstream');
             continue;
           }
           lastError = error;
+          // TEMP-DIAGNOSTIC (remove after production triage): metadata only —
+          // generic code and HTTP status; never bodies, headers, or keys.
+          console.error(JSON.stringify({ event: 'provider_attempt_failed', request_id: input.requestId.slice(0, 128), provider_id: provider.id, credential_id: credential.id, model: vendorModel.slice(0, 128), ...endpointMeta(provider.baseUrl), ...errorMeta(error) }));
           const now = this.nowMs();
           if (error.code === 'malformed') throw error;
           if (error.code === 'timeout') {
+            // Adapter-level per-provider timeout (provider.timeout_ms), not the
+            // engine's overall budget: retryable unless the CALLER cancelled.
+            // Failover to the next eligible provider continues here.
             if (input.signal?.aborted) throw error;
             this.health.cooldown(credential.id, now + this.cooldowns.serverErrorMs);
             continue;
@@ -282,6 +342,8 @@ export class AIRouter implements ModelProvider {
       if (attempts >= this.maxAttempts) break;
     }
 
+    // TEMP-DIAGNOSTIC (remove after production triage): metadata only.
+    console.error(JSON.stringify({ event: 'router_exhausted', request_id: input.requestId.slice(0, 128), ...errorMeta(lastError) }));
     throw lastError;
   }
 }

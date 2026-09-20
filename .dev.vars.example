@@ -8,3 +8,13 @@
 # Webhook secret sent as X-Telegram-Bot-Api-Secret-Token (Phase 2+).
 # Must match the secret_token registered via setWebhook.
 # TELEGRAM_WEBHOOK_SECRET=
+
+# Master encryption key for AI provider credentials stored in D1 (Phase 4+).
+# Generate locally with `openssl rand -hex 32`. Required for AI routing and for
+# credential provisioning (scripts/provision.mjs reads it from
+# HAWKTALK_CREDENTIAL_MASTER_SECRET or a hidden stdin prompt).
+# CREDENTIAL_MASTER_SECRET=
+
+# Numeric Telegram user ID of the instance owner (OWNER bootstrap, Phase 11+).
+# When present, the matching Telegram user is assigned the OWNER role on upsert.
+# OWNER_TELEGRAM_ID=

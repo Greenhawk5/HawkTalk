@@ -60,6 +60,37 @@ D1 stores users, processed updates, policies, conversations, messages, provider 
 - Missing production secrets, D1, Workers AI, or Vectorize dependencies fail closed or disable the dependent capability.
 - Admin commands are private-chat-only, re-authorized against current server state, and destructive actions require durable confirmation.
 
+## Provider and Credential Management
+
+### Relationship
+A provider represents an upstream AI service endpoint (e.g., OpenRouter, Z.AI, Google Gemini). Each provider has exactly one base URL, one default model, and configuration parameters (weight, timeout, max credential attempts). A provider owns one or more credentials, forming a 1:N relationship.
+
+### Provider-level Base URL
+All credentials for a given provider share the same base URL. Differences between providers are purely configuration — not protocol. The current OpenAI-compatible adapter (`src/ai/adapter.ts`) handles all supported providers through the same `/chat/completions` path.
+
+### Multiple Credentials Per Provider
+Providers support multiple credentials to enable key rotation and quota distribution without downtime. New credentials are inserted with fresh encryption parameters; old ones are disabled then deleted. The router selects credentials by deterministic weight ordering with cooldown-based failover — no round-robin.
+
+### Supported Provider Protocols
+All currently supported providers use the OpenAI-compatible chat completions protocol:
+- **OpenRouter**: `https://openrouter.ai/api/v1`
+- **Z.AI**: `https://api.z.ai/api/v1` 
+- **Google Gemini** (OpenAI-compatible endpoint): `https://generativelanguage.googleapis.com/v1beta/openai`
+
+No native Gemini adapter is required; the OpenAI-compatible adapter serves all three.
+
+### Secure Credential Provisioning
+API keys MUST NOT be entered through Telegram messages (chat history persists server-side), command-line arguments (shell history), or logs. Provisioning uses the committed CLI, which shares the Worker's validation, SQL builders, and `sealCredential` AES-GCM sealing:
+
+```
+node --experimental-strip-types scripts/provision.mjs provider <id> <base-url> <default-model> [weight] [timeout-ms] [max-attempts] [--env production]
+node --experimental-strip-types scripts/provision.mjs credential <provider-id> <label> [weight] [--env production]
+```
+
+The key and `CREDENTIAL_MASTER_SECRET` are read from hidden stdin prompts (or `HAWKTALK_CREDENTIAL_MASTER_SECRET`); by default the CLI prints a `wrangler d1 execute` command containing ciphertext only, or applies it with `--execute`. See docs/DEPLOYMENT-RUNBOOK.md (STEP F) for the full workflow. The plaintext key exists only transiently during AES-GCM encryption and never appears in logs, audit records, admin listings, or error messages.
+### Admin Management
+OWNER and ADMIN roles can create providers, update provider configuration, and create credentials through the AdminService. Only OWNER can delete credentials (requires durable confirmation). All mutations are atomically audited.
+
 ## Environments
 
-`wrangler.toml` defines local `dev` D1. Staging and production intentionally have no remote bindings in this checkout; provisioning and secret configuration are human-only steps. Durable Objects are not used by the current implementation.
+`wrangler.toml` defines local `dev` D1 (placeholder id, `remote = false`) and the production bindings that are provisioned by a human (D1, AI, Vectorize). No secrets live in `wrangler.toml`; all secrets are set via `wrangler secret put`. Durable Objects are not used by the current implementation.

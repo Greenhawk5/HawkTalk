@@ -13,6 +13,10 @@ local_protocol = "http"
 [observability]
 enabled = false
 
+# ============================================================
+# Development
+# ============================================================
+
 [env.dev]
 name = "hawktalk-agent-dev"
 
@@ -22,11 +26,18 @@ APP_ENV = "development"
 [[env.dev.d1_databases]]
 binding = "DB"
 database_name = "hawktalk-local"
+# Local-only placeholder. `remote = false` means wrangler dev uses the local
+# miniflare D1 (`.wrangler/state`); this id is never a real remote database.
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 remote = false
 
-# Remote bindings are deliberately absent until human provisioning.
+# ============================================================
+# Staging
+# ============================================================
+# Staging resources are intentionally not provisioned yet.
+# Human provisioning is required before using this environment.
+
 [env.staging]
 name = "hawktalk-agent-staging"
 d1_databases = []
@@ -34,9 +45,26 @@ d1_databases = []
 [env.staging.vars]
 APP_ENV = "staging"
 
+# ============================================================
+# Production
+# ============================================================
+
 [env.production]
 name = "hawktalk-agent-production"
-d1_databases = []
+workers_dev = true
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "hawktalk-db"
+database_id = "62e0100e-432b-4391-8660-9db73f79576a"
+migrations_dir = "migrations"
+
+[env.production.ai]
+binding = "AI"
+
+[[env.production.vectorize]]
+binding = "VECTORIZE"
+index_name = "hawktalk-memories"
 
 [env.production.vars]
 APP_ENV = "production"

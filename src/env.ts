@@ -17,6 +17,10 @@ export interface AppEnv {
   // Phase 10: Cloudflare Vectorize index binding for semantic-memory vector search.
   // Optional: when absent, semantic memory is disabled (fail-closed).
   VECTORIZE?: VectorizeIndex;
+  // OWNER bootstrap: numeric Telegram user ID of the instance owner.
+  // Set via `wrangler secret put OWNER_TELEGRAM_ID` — never in wrangler.toml or source.
+  // When present, the matching Telegram user is assigned OWNER role on upsert.
+  OWNER_TELEGRAM_ID?: string;
 }
 
 export function validateEnv(env: Partial<AppEnv>): asserts env is AppEnv {

@@ -16,8 +16,11 @@ export type AdminAction =
   | 'users.set_status'
   | 'providers.list'
   | 'providers.inspect'
+  | 'providers.create'
+  | 'providers.update'
   | 'providers.set_enabled'
   | 'credentials.list'
+  | 'credentials.create'
   | 'credentials.set_enabled'
   | 'credentials.delete'
   | 'policies.list'
@@ -68,8 +71,11 @@ const ACTION_CAPABILITY: Record<AdminAction, AdminCapability> = {
   'users.set_status': 'manage_ordinary_users',
   'providers.list': 'view_providers',
   'providers.inspect': 'view_providers',
+  'providers.create': 'manage_providers',
+  'providers.update': 'manage_providers',
   'providers.set_enabled': 'manage_providers',
   'credentials.list': 'view_credentials',
+  'credentials.create': 'manage_providers',
   'credentials.set_enabled': 'manage_providers',
   'credentials.delete': 'delete_credentials',
   'policies.list': 'view_policies',

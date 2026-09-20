@@ -30,8 +30,19 @@ import {
 // no logs, and never touches Telegram, D1, Wrangler, or the network. All
 // failures surface as AgentError with a stable public code.
 
-export const DEFAULT_PROVIDER_TIMEOUT_MS = 30_000;
-export const MAX_PROVIDER_TIMEOUT_MS = 300_000;
+// Timeout ownership (post-incident fix):
+// - The per-provider timeout lives in the ADAPTER (provider.timeout_ms, wired
+//   by AIRouter). It is classified as ProviderError('timeout'), which AIRouter
+//   treats as retryable and uses to fail over to the next eligible provider.
+// - The engine watchdog below is the OVERALL agent-operation budget only. It
+//   must stay strictly longer than the router's per-attempt budgets so a
+//   provider timeout surfaces inside the router (provider_attempt_failed →
+//   failover) instead of the watchdog preemptively winning the race and
+//   terminating the whole operation as AgentError('provider_timeout').
+//   It exists solely to bound the operation against providers that never
+//   settle (ignore the abort signal), and it remains capped by MAX.
+export const DEFAULT_AGENT_TIMEOUT_MS = 120_000;
+export const MAX_AGENT_TIMEOUT_MS = 300_000;
 
 export interface RunAgentOptions {
   timeoutMs?: number | undefined;
@@ -176,8 +187,10 @@ export async function runAgent(request: unknown, provider: unknown, options: Run
   const validated = validateAgentRequest(request);
   const modelProvider = validateProvider(provider);
 
-  const timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_PROVIDER_TIMEOUT_MS) {
+  // OVERALL operation budget (see the timeout-ownership note above). Not a
+  // per-provider cap: AIRouter and the adapter own per-provider timing.
+  const timeoutMs = options.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_AGENT_TIMEOUT_MS) {
     throw new AgentError('invalid_request');
   }
 
@@ -196,6 +209,9 @@ export async function runAgent(request: unknown, provider: unknown, options: Run
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      // Last-resort watchdog: fire ONLY when the overall budget is exhausted
+      // (e.g. a provider ignoring the abort signal). Per-provider timeouts are
+      // handled earlier inside AIRouter/adapter and never reach this point.
       controller.abort();
       reject(new AgentError('provider_timeout'));
     }, timeoutMs);

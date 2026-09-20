@@ -50,8 +50,8 @@ async function callWebhook(req: Request, opts: { telegramFetch?: FetchMock; admi
     requestId: 'test-request-id',
     telegramFetch,
     now: () => FIXED_NOW,
-    adminService: opts.adminService,
-    flow: opts.flow,
+    ...(opts.adminService !== undefined ? { adminService: opts.adminService } : {}),
+    ...(opts.flow !== undefined ? { flow: opts.flow } : {}),
   });
   return { response, telegramFetch };
 }

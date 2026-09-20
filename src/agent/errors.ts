@@ -43,16 +43,39 @@ export type ProviderErrorCode = 'unavailable' | 'timeout' | 'upstream' | 'malfor
  * HTTP failures (e.g. 429 vs 401 vs 5xx) so routers can apply cooldown /
  * failover policy. It is undefined for network, timeout, and malformed
  * failures. The engine ignores it; only routing policy reads it.
+ *
+ * TEMP-DIAGNOSTIC EXTENSION (remove after production triage): `phase`,
+ * `detail`, and `contentType` carry bounded, sanitized diagnostic metadata:
+ * - phase: where the attempt failed — 'network' (fetch/transport), 'http'
+ *   (non-2xx response), 'parse' (2xx payload not parseable), 'schema'
+ *   (parsed payload failed structural validation).
+ * - detail: sanitized upstream error message, printable-ASCII only,
+ *   truncated to 200 characters. NEVER contains credentials; upstream error
+ *   bodies describe the provider's own rejection, not our secrets.
+ * - contentType: the upstream Content-Type response header value, when a
+ *   response was received.
  */
+export type ProviderFailurePhase = 'network' | 'http' | 'parse' | 'schema';
+
 export class ProviderError extends Error {
   readonly code: ProviderErrorCode;
   readonly httpStatus?: number | undefined;
+  readonly phase?: ProviderFailurePhase | undefined;
+  readonly detail?: string | undefined;
+  readonly contentType?: string | undefined;
 
-  constructor(code: ProviderErrorCode, httpStatus?: number | undefined) {
+  constructor(
+    code: ProviderErrorCode,
+    httpStatus?: number | undefined,
+    meta?: { phase?: ProviderFailurePhase; detail?: string; contentType?: string },
+  ) {
     super(`Provider error: ${code}`);
     this.name = 'ProviderError';
     this.code = code;
     if (httpStatus !== undefined) this.httpStatus = httpStatus;
+    if (meta?.phase !== undefined) this.phase = meta.phase;
+    if (meta?.detail !== undefined) this.detail = meta.detail;
+    if (meta?.contentType !== undefined) this.contentType = meta.contentType;
   }
 }
 

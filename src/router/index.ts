@@ -9,6 +9,7 @@ import { buildProductionProvider, buildProductionResearchTools, buildProductionU
 import { D1ProviderDirectory } from '../ai/router';
 import type { ConversationFlowDeps } from '../orchestration/service';
 import { AdminService } from '../admin/service';
+import { sealCredential } from '../ai/crypto';
 
 /**
  * Production conversational flow factory (composition root). Wires D1
@@ -82,7 +83,10 @@ export async function route(request: Request, ctx?: RouteContext): Promise<Respo
     // It is used for log correlation only, never trusted from the caller.
     // The admin CMS is composed from D1 when available (no secrets needed);
     // tests may inject their own instance.
-    const adminService = ctx.adminService ?? (ctx.env.DB && typeof ctx.env.DB.prepare === 'function' ? new AdminService(ctx.env.DB, ctx.now) : undefined);
+    const sealFn = ctx.env.CREDENTIAL_MASTER_SECRET
+      ? ((plaintext: string) => sealCredential(plaintext, ctx.env.CREDENTIAL_MASTER_SECRET!))
+      : undefined;
+    const adminService = ctx.adminService ?? (ctx.env.DB && typeof ctx.env.DB.prepare === 'function' ? new AdminService(ctx.env.DB, ctx.now, sealFn) : undefined);
     return handleTelegramWebhook(request, ctx.env, ctx.requestId, {
       fetchImpl: ctx.telegramFetch,
       now: ctx.now,

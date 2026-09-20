@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['node_modules/**', 'dist/**', '.wrangler/**', 'worker-configuration.d.ts'] },
+  { ignores: ['node_modules/**', 'dist/**', '.wrangler/**', '.wrangler-bundle-inspect/**', 'worker-configuration.d.ts'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -15,6 +15,18 @@ export default tseslint.config(
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/consistent-type-imports': 'error',
       'no-eval': 'error',
+    },
+  },
+  {
+    // Standalone provisioning CLI: plain Node script, no TS type-aware linting.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        crypto: 'readonly',
+        Buffer: 'readonly',
+      },
     },
   },
 );

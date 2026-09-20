@@ -12,6 +12,7 @@ import { handleAdminCallback, handleAdminCommand } from './admin-handler';
 import type { AdminService } from '../admin/service';
 import { parseMemoryCommand, handleMemoryCommand } from './memory-commands';
 import { buildProductionMemoryService } from '../orchestration/production';
+import { isControlPlaneCommand, handleControlPlaneCommand } from './control-plane';
 
 // Telegram webhook entrypoint (Phase 2 transport + Phase 6 conversational flow).
 //
@@ -133,12 +134,13 @@ export async function handleTelegramWebhook(
   }
 
   // Update kind for the durable idempotency ledger. Admin traffic (the /admin
-  // command and admin callbacks) is claimed under kind 'admin' so it never
-  // re-enters conversational processing on redelivery.
-  const isAdminUpdate =
+  // command and admin callbacks) and control-plane commands (/start, /help)
+  // are claimed under kind 'admin' so they never re-enter conversational
+  // processing on redelivery.
+  const isControlPlaneUpdate =
     update.kind === 'admin_callback' ||
-    (update.kind === 'text_message' && update.text.trim() === ADMIN_COMMAND);
-  const kind = isAdminUpdate ? 'admin' : update.kind === 'text_message' ? 'text' : 'unsupported';
+    (update.kind === 'text_message' && (update.text.trim() === ADMIN_COMMAND || isControlPlaneCommand(update.text)));
+  const kind = isControlPlaneUpdate ? 'admin' : update.kind === 'text_message' ? 'text' : 'unsupported';
   const updateUserId = update.kind === 'text_message' || update.kind === 'admin_callback' ? update.userId : null;
   let claimed: boolean;
   try {
@@ -153,7 +155,7 @@ export async function handleTelegramWebhook(
     // never regenerate. Without a flow (transport-only) just acknowledge.
     // Admin updates are fully handled on first delivery: duplicates are
     // acknowledged without re-executing any admin logic (idempotency).
-    if (isAdminUpdate) return Response.json({ ok: true });
+    if (isControlPlaneUpdate) return Response.json({ ok: true });
     const botToken = env.TELEGRAM_BOT_TOKEN;
     if (deps.flow !== undefined && update.kind === 'text_message' && update.chatType === 'private' && typeof botToken === 'string' && botToken.length > 0) {
       try {
@@ -191,7 +193,35 @@ export async function handleTelegramWebhook(
   // flow, never invokes Agent Core / AI Router / tools, and never consumes
   // normal conversational quota. Without a wired AdminService the update is
   // acknowledged (fail closed) rather than treated as a chat message.
-  if (isAdminUpdate) {
+  if (isControlPlaneUpdate) {
+    // Control-plane commands (/start, /help): deterministic, no AI required.
+    if (update.kind === 'text_message' && isControlPlaneCommand(update.text)) {
+      const cpBotToken = env.TELEGRAM_BOT_TOKEN;
+      if (typeof cpBotToken !== 'string' || cpBotToken.length === 0) {
+        console.error(JSON.stringify({ event: 'webhook_misconfigured', request_id: requestId }));
+        return Response.json({ error: 'Something went wrong' }, { status: 500 });
+      }
+      try {
+        await upsertTelegramUser(
+          db,
+          { telegramUserId: update.userId, username: update.username, displayName: update.displayName },
+          now(),
+          env.OWNER_TELEGRAM_ID,
+        );
+        const result = await handleControlPlaneCommand(db, update.userId, update.text);
+        await sendTelegramMessage({
+          token: cpBotToken,
+          chatId: update.chatId,
+          text: result.text,
+          replyMarkup: result.keyboard ? { inline_keyboard: result.keyboard } : undefined,
+          fetchImpl: deps.fetchImpl,
+        });
+        return Response.json({ ok: true });
+      } catch {
+        console.error(JSON.stringify({ event: 'command_handling_failed', request_id: requestId }));
+        return Response.json({ error: 'Something went wrong' }, { status: 500 });
+      }
+    }
     const adminService = deps.adminService;
     if (adminService === undefined) return Response.json({ ok: true });
     const botToken = env.TELEGRAM_BOT_TOKEN;
@@ -243,6 +273,7 @@ export async function handleTelegramWebhook(
       db,
       { telegramUserId: update.userId, username: update.username, displayName: update.displayName },
       now(),
+      env.OWNER_TELEGRAM_ID,
     );
   } catch {
     console.error(JSON.stringify({ event: 'webhook_user_upsert_failed', request_id: requestId }));
@@ -331,7 +362,10 @@ export async function handleTelegramWebhook(
     if (flowErrorKind !== null && PRE_GENERATION_ERROR_KINDS.includes(flowErrorKind)) {
       await releaseUpdateClaim(db, update.updateId).catch(() => undefined);
     }
-    console.error(JSON.stringify({ event: 'webhook_flow_failed', request_id: requestId }));
+    const logEvent = 'webhook_flow_failed';
+    // flowErrorKind is generic (e.g. 'agent_failed') and safe to log; it never
+    // carries prompt/response content, credentials, or request bodies.
+    console.error(JSON.stringify({ event: logEvent, kind: flowErrorKind, request_id: requestId }));
     return Response.json({ error: 'Something went wrong' }, { status: 500 });
   }
 

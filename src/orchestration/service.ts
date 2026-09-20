@@ -176,7 +176,22 @@ export async function handleUserTextMessage(
       agentResponse = await runAgent(buildAgentRequest(deps, toolMessages, routing), deps.provider);
       assistantText = agentResponse.text;
     }
-  } catch {
+  } catch (agentError) {
+    // TEMP-DIAGNOSTIC (remove after production triage): logs ONLY bounded,
+    // non-secret metadata — error name, sanitized generic message (ProviderError
+    // messages are constant strings like 'Provider error: upstream'), and
+    // httpStatus when present. Never prompt/response content, keys, or bodies.
+    const diag = agentError instanceof Error
+      ? {
+          name: agentError.name,
+          message: String(agentError.message).replace(/[^\x20-\x7E]/g, '?').slice(0, 120),
+          ...(('code' in agentError && typeof (agentError as { code?: unknown }).code === 'string') ? { code: (agentError as { code: string }).code } : {}),
+          ...(('httpStatus' in agentError && typeof (agentError as { httpStatus?: unknown }).httpStatus === 'number') ? { http_status: (agentError as { httpStatus: number }).httpStatus } : {}),
+          ...(('phase' in agentError && typeof (agentError as { phase?: unknown }).phase === 'string') ? { failure_phase: (agentError as { phase: string }).phase } : {}),
+          ...(('detail' in agentError && typeof (agentError as { detail?: unknown }).detail === 'string') ? { detail: String((agentError as { detail: string }).detail).slice(0, 200) } : {}),
+        }
+      : { name: typeof agentError };
+    console.error(JSON.stringify({ event: 'agent_stage_failed', request_id: deps.requestId, ...diag }));
     // Terminal failure: the update never regenerates (approved policy).
     await processing.markFailed(updateId).catch(() => undefined);
     throw new ConversationFlowError('agent_failed');

@@ -12,6 +12,7 @@
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "build": "wrangler deploy --env dev --dry-run --outdir dist",
+    "provision": "node --experimental-strip-types scripts/provision.mjs",
     "security": "npm audit --audit-level=low",
     "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run security"
   },

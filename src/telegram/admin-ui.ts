@@ -42,9 +42,12 @@ export type AdminCallback =
   | { action: 'urole'; userId: number; fromRole: string; toRole: string }
   | { action: 'ustat'; userId: number; nextStatus: 'active' | 'blocked' }
   | { action: 'usage' }
-  | { action: 'routing' };
+  | { action: 'routing' }
+  | { action: 'addprov' }
+  | { action: 'editprov'; providerId: string; field: string }
+  | { action: 'addcred'; providerId: string };
 
-const CALLBACK_ACTIONS: ReadonlySet<string> = new Set(['menu', 'dashboard', 'users', 'user', 'policy', 'providers', 'provider', 'audit', 'tools', 'credentials', 'provtog', 'credtog', 'credask', 'confirm', 'urole', 'ustat', 'usage', 'routing']);
+const CALLBACK_ACTIONS: ReadonlySet<string> = new Set(['menu', 'dashboard', 'users', 'user', 'policy', 'providers', 'provider', 'audit', 'tools', 'credentials', 'provtog', 'credtog', 'credask', 'confirm', 'urole', 'ustat', 'usage', 'routing', 'addprov', 'editprov', 'addcred']);
 const SAFE_ID = /^[a-z0-9-]{1,64}$/;
 const ROLES: ReadonlySet<string> = new Set(['OWNER', 'ADMIN', 'VIP', 'USER', 'BLOCKED']);
 const STATUSES: ReadonlySet<string> = new Set(['active', 'blocked']);
@@ -124,6 +127,18 @@ export function parseAdminCallback(data: string): AdminCallback | null {
       if (userId === null || !STATUSES.has(nextStatus)) return null;
       return { action, userId, nextStatus: nextStatus as 'active' | 'blocked' };
     }
+    case 'addprov':
+      return parts.length === 2 ? { action } : null;
+    case 'addcred': {
+      if (parts.length !== 3 || arg === undefined || !SAFE_ID.test(arg)) return null;
+      return { action, providerId: arg };
+    }
+    case 'editprov': {
+      if (parts.length !== 4 || arg === undefined || !SAFE_ID.test(arg)) return null;
+      const field = parts[3] ?? '';
+      if (!['baseUrl', 'defaultModel', 'weight', 'timeoutMs', 'maxCredentialAttempts'].includes(field)) return null;
+      return { action, providerId: arg, field };
+    }
     default: return null;
   }
 }
@@ -201,6 +216,7 @@ export function renderUserDetail(user: { id: number; telegram_user_id: number; u
 export function renderProviderList(providers: Array<{ id: string; enabled: boolean; defaultModel: string; credentialCount: number }>): AdminView {
   const lines = providers.map((provider) => `${provider.enabled ? '🟢' : '🔴'} ${provider.id} (${provider.credentialCount} cred, ${provider.defaultModel})`);
   const keyboard: InlineButton[][] = providers.slice(0, 10).map((provider) => [{ text: `${provider.id}`, callbackData: `a:provider:${provider.id}` }]);
+  keyboard.push([{ text: '+ Add Provider', callbackData: 'a:addprov' }]);
   keyboard.push([backButton()]);
   return {
     text: clamp(`🤖 Providers\n\n${lines.length > 0 ? lines.join('\n') : 'No providers configured.'}`),
@@ -211,11 +227,20 @@ export function renderProviderList(providers: Array<{ id: string; enabled: boole
 export function renderProviderDetail(provider: { id: string; baseUrl: string; enabled: boolean; weight: number; defaultModel: string; timeoutMs: number; maxCredentialAttempts: number; credentials: Array<{ id: string; label: string; enabled: boolean; weight: number }> }, actorRole: string): AdminView {
   const keyboard: InlineButton[][] = [];
   keyboard.push([{ text: provider.enabled ? '⏸ Disable' : '▶ Enable', callbackData: `a:provtog:${provider.id}:${provider.enabled ? 'off' : 'on'}` }]);
+  keyboard.push([
+    { text: 'Edit URL', callbackData: `a:editprov:${provider.id}:baseUrl` },
+    { text: 'Edit Model', callbackData: `a:editprov:${provider.id}:defaultModel` },
+  ]);
+  keyboard.push([
+    { text: 'Edit Weight', callbackData: `a:editprov:${provider.id}:weight` },
+    { text: 'Edit Timeout', callbackData: `a:editprov:${provider.id}:timeoutMs` },
+  ]);
   for (const credential of provider.credentials) {
     const row: InlineButton[] = [{ text: `${credential.enabled ? '⏸' : '▶'} ${credential.id}`, callbackData: `a:credtog:${credential.id}:${credential.enabled ? 'off' : 'on'}` }];
     if (actorRole === 'OWNER') row.push({ text: '🗑 Delete', callbackData: `a:credask:${credential.id}` });
     keyboard.push(row);
   }
+  keyboard.push([{ text: '+ Add Credential', callbackData: `a:addcred:${provider.id}` }]);
   keyboard.push([{ text: '← Providers', callbackData: 'a:providers' }]);
   const credentials = provider.credentials.map((credential) => `${credential.enabled ? '🟢' : '🔴'} ${credential.id} "${credential.label}" w${credential.weight}`).join('\n');
   return {
@@ -282,4 +307,31 @@ export function renderAudit(records: Array<{ id: number; actorRole: string; acti
 
 export function renderError(kind: AdminError['kind']): AdminView {
   return { text: adminErrorText(kind), keyboard: [[backButton()]] };
+}
+
+export function renderAddProviderInstructions(): AdminView {
+  return {
+    text: clamp('Add Provider\n\nProviders are created via the secure provisioning CLI (never via chat):\n\nnode --experimental-strip-types scripts/provision.mjs provider <id> <base-url> <default-model> [weight] [timeout-ms] [max-attempts] --env production\n\nFields: id (lowercase [a-z0-9-]), base_url (https only), default_model. Optional: weight (1-10000, default 100), timeout_ms (1000-120000, default 30000), max_credential_attempts (1-10, default 3).'),
+    keyboard: [[{ text: '← Providers', callbackData: 'a:providers' }]],
+  };
+}
+
+export function renderEditProviderField(providerId: string, field: string, currentValue: string): AdminView {
+  return {
+    text: clamp(`Edit ${field}\n\nProvider: ${providerId}\nField: ${field}\nCurrent value: ${currentValue}\n\nUpdates are applied via the secure provisioning CLI so the same validation applies:\n\nRe-create with node --experimental-strip-types scripts/provision.mjs provider ... (safe no-op if unchanged) or update via wrangler d1 execute using the CLI-validated value. Do not send configuration values through Telegram.`),
+    keyboard: [
+      [{ text: '← Provider', callbackData: `a:provider:${providerId}` }],
+      [{ text: '← Providers', callbackData: 'a:providers' }],
+    ],
+  };
+}
+
+export function renderAddCredentialInstructions(providerId: string): AdminView {
+  return {
+    text: clamp(`Add Credential\n\nProvider: ${providerId}\n\nAPI keys MUST NOT be sent through Telegram (chat history persists server-side).\n\nProvision securely with the committed CLI — the key is read from a hidden stdin prompt and sealed with AES-GCM before storage:\n\nnode --experimental-strip-types scripts/provision.mjs credential ${providerId} "<label>" --env production\n\nThe plaintext key exists only transiently during encryption and never appears in logs, audit records, or admin listings.`),
+    keyboard: [
+      [{ text: '← Provider', callbackData: `a:provider:${providerId}` }],
+      [{ text: '← Providers', callbackData: 'a:providers' }],
+    ],
+  };
 }

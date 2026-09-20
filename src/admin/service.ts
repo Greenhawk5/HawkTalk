@@ -15,12 +15,23 @@ import {
   listUsersPage,
 } from '../db/admin-users';
 import {
+  validateProviderId,
+  validateBaseUrl,
+  validateDefaultModel,
+  validateWeight,
+  validateTimeoutMs,
+  validateMaxCredentialAttempts,
+  validateCredentialLabel,
+  validateCredentialWeight,
+} from './provider-validation';
+import {
   countCredentials,
   countProviders,
   findProviderById,
   listAllProviders,
   listCredentialMetaForProvider,
 } from '../db/admin-providers';
+import type { ProviderInsertParams, ProviderUpdateFields, CredentialInsertParams } from './provisioning';
 import { applyAdminMutation, validateMutation } from '../db/admin-mutations';
 import { findPolicy, listPolicies, type PolicyUpdate } from '../db/admin-policies';
 import { appendAuditLog, listAuditPage, type AuditPage, type AuditRecord } from '../db/admin-audit';
@@ -106,10 +117,12 @@ export interface PolicySummary {
 export class AdminService {
   private readonly db: D1Database;
   private readonly now: () => string;
+  private readonly sealFn: ((plaintext: string) => Promise<string>) | undefined;
 
-  constructor(db: D1Database, now?: () => string) {
+  constructor(db: D1Database, now?: () => string, sealFn?: ((plaintext: string) => Promise<string>) | undefined) {
     this.db = db;
     this.now = now ?? (() => new Date().toISOString());
+    this.sealFn = sealFn;
   }
 
   private async authorize(actorUserId: number, action: AdminAction): Promise<{ userId: number; role: AdminRole }> {
@@ -271,6 +284,84 @@ export class AdminService {
       maxCredentialAttempts: provider.max_credential_attempts,
       credentials: credentials.map((credential) => ({ id: credential.id, label: credential.label, enabled: credential.enabled, weight: credential.weight })),
     };
+  }
+
+  async createProvider(actorUserId: number, params: { id: string; baseUrl: string; defaultModel: string; weight?: number; timeoutMs?: number; maxCredentialAttempts?: number }, ctx?: AdminAuditContext): Promise<void> {
+    await this.authorize(actorUserId, 'providers.create');
+    validateProviderId(params.id);
+    validateBaseUrl(params.baseUrl);
+    validateDefaultModel(params.defaultModel);
+    const weight = params.weight ?? 100;
+    const timeoutMs = params.timeoutMs ?? 30000;
+    const maxCredentialAttempts = params.maxCredentialAttempts ?? 3;
+    validateWeight(weight);
+    validateTimeoutMs(timeoutMs);
+    validateMaxCredentialAttempts(maxCredentialAttempts);
+    const existing = await findProviderById(this.db, params.id).catch(() => { throw new AdminError('storage_failed', 'Administrative data unavailable'); });
+    if (existing !== null) throw new AdminError('conflict', 'Provider already exists');
+    const insertParams: ProviderInsertParams = { id: params.id, baseUrl: params.baseUrl, defaultModel: params.defaultModel, weight, timeoutMs, maxCredentialAttempts };
+    // Single authoritative mutation path: atomic mutation + audit via batch,
+    // with the SQL-level ADMIN/OWNER actor guard applied by applyAdminMutation.
+    await applyAdminMutation(this.db, actorUserId, { action: 'providers.create', target: params.id, value: insertParams }, this.now(), ctx?.requestId, {
+      base_url: params.baseUrl,
+      default_model: params.defaultModel,
+      weight,
+      timeout_ms: timeoutMs,
+    });
+  }
+
+  async updateProvider(actorUserId: number, providerId: string, fields: { baseUrl?: string; defaultModel?: string; weight?: number; timeoutMs?: number; maxCredentialAttempts?: number }, ctx?: AdminAuditContext): Promise<void> {
+    await this.authorize(actorUserId, 'providers.update');
+    validateProviderId(providerId);
+    if (Object.keys(fields).length === 0) throw new AdminError('validation_failed', 'No fields to update');
+    if (fields.baseUrl !== undefined) validateBaseUrl(fields.baseUrl);
+    if (fields.defaultModel !== undefined) validateDefaultModel(fields.defaultModel);
+    if (fields.weight !== undefined) validateWeight(fields.weight);
+    if (fields.timeoutMs !== undefined) validateTimeoutMs(fields.timeoutMs);
+    if (fields.maxCredentialAttempts !== undefined) validateMaxCredentialAttempts(fields.maxCredentialAttempts);
+    const existing = await findProviderById(this.db, providerId).catch(() => { throw new AdminError('storage_failed', 'Administrative data unavailable'); });
+    if (existing === null) throw new AdminError('not_found', 'Provider not found');
+    const updateFields: ProviderUpdateFields = {};
+    if (fields.baseUrl !== undefined) updateFields.baseUrl = fields.baseUrl;
+    if (fields.defaultModel !== undefined) updateFields.defaultModel = fields.defaultModel;
+    if (fields.weight !== undefined) updateFields.weight = fields.weight;
+    if (fields.timeoutMs !== undefined) updateFields.timeoutMs = fields.timeoutMs;
+    if (fields.maxCredentialAttempts !== undefined) updateFields.maxCredentialAttempts = fields.maxCredentialAttempts;
+    // Single authoritative mutation path: atomic mutation + audit via batch.
+    await applyAdminMutation(this.db, actorUserId, { action: 'providers.update', target: providerId, value: updateFields }, this.now(), ctx?.requestId, {
+      fields: Object.keys(fields),
+    });
+  }
+
+  async createCredential(actorUserId: number, params: { providerId: string; label: string; plaintextKey: string; weight?: number }, ctx?: AdminAuditContext): Promise<void> {
+    await this.authorize(actorUserId, 'credentials.create');
+    validateProviderId(params.providerId);
+    validateCredentialLabel(params.label);
+    const weight = params.weight ?? 100;
+    validateCredentialWeight(weight);
+    if (typeof params.plaintextKey !== 'string' || params.plaintextKey.length === 0) {
+      throw new AdminError('validation_failed', 'Plaintext key must not be empty');
+    }
+    if (!this.sealFn) {
+      throw new AdminError('storage_failed', 'Credential encryption is not configured');
+    }
+    const existing = await findProviderById(this.db, params.providerId).catch(() => { throw new AdminError('storage_failed', 'Administrative data unavailable'); });
+    if (existing === null) throw new AdminError('not_found', 'Provider not found');
+    let sealed: string;
+    try {
+      sealed = await this.sealFn(params.plaintextKey);
+    } catch {
+      throw new AdminError('storage_failed', 'Credential encryption failed');
+    }
+    const credId = `${params.providerId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const insertParams: CredentialInsertParams = { id: credId, providerId: params.providerId, label: params.label, weight, sealedCiphertext: sealed };
+    // Single authoritative mutation path: atomic mutation + audit via batch.
+    // Audit detail deliberately excludes the plaintext key and ciphertext.
+    await applyAdminMutation(this.db, actorUserId, { action: 'credentials.create', target: credId, value: insertParams }, this.now(), ctx?.requestId, {
+      provider_id: params.providerId,
+      label: params.label,
+      weight,
+    });
   }
 
   /** Credential metadata lookup (never ciphertext), authorized as credentials.list. */

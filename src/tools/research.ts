@@ -25,11 +25,12 @@ async function unavailableSearch(): Promise<never> {
   throw new Error('search_unconfigured');
 }
 
-export function buildResearchTools(fetchImpl: typeof fetch = globalThis.fetch): ResearchTools {
+export function buildResearchTools(fetchImpl?: typeof fetch): ResearchTools {
+  const resolvedFetch = fetchImpl ?? ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args));
   const fetchTool = createWebFetchTool({
     fetch: async (url: string, signal?: AbortSignal) => {
       const init: RequestInit = signal === undefined ? {} : { signal };
-      const response = await fetchImpl(url, init);
+      const response = await resolvedFetch(url, init);
       const contentType = response.headers.get('content-type') ?? 'text/plain';
       const body = await response.text();
       return { status: response.status, contentType, body };

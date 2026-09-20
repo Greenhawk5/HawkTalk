@@ -11,6 +11,7 @@ import {
   StaticProviderDirectory,
   type ProviderDirectoryEntry,
 } from '../src/ai/router';
+import { resolveRoutingProfile } from '../src/ai/routing-profiles';
 import { runAgent } from '../src/agent/engine';
 import { AgentError } from '../src/agent/errors';
 import { ProviderError } from '../src/agent/errors';
@@ -77,8 +78,33 @@ function storedCredential(overrides: Partial<StoredCredential> = {}): StoredCred
   return { id: 'key-1', providerId: 'p1', label: 'first', enabled: true, weight: 100, ciphertext: SEALED_A, ...overrides };
 }
 
+const now = 1_700_000_000_000;
+const defaultNowMs = (): number => now;
 function agentInput(model: string): ProviderGenerateInput {
   return { requestId: 'req-1', model, systemPrompt: 'sys', messages: [{ role: 'user', content: 'hello' }], maxOutputTokens: 100 };
+}
+function makeRouter(opts: {
+    nowMs?: () => number;
+  providers?: ProviderDirectoryEntry[];
+  credentials?: StoredCredential[];
+  fetchMock?: FetchMock;
+  maxAttempts?: number;
+  cooldowns?: { rateLimitedMs?: number; serverErrorMs?: number; invalidCredentialMs?: number };
+} = {}): { router: AIRouter; health: InMemoryRouterHealth; fetchMock: FetchMock } {
+  const clock = opts.nowMs ?? defaultNowMs;
+  const health = new InMemoryRouterHealth(clock);
+  const fetchMock = opts.fetchMock ?? mockFetch(completion('routed!'));
+  const router = new AIRouter({
+    directory: new StaticProviderDirectory(opts.providers ?? [providerEntry()]),
+    credentialStore: new StaticCredentialStore(opts.credentials ?? [storedCredential()]),
+    health,
+    masterSecret: MASTER,
+    fetchImpl: fetchMock,
+    nowMs: clock,
+    cooldowns: opts.cooldowns,
+    maxAttempts: opts.maxAttempts,
+  });
+  return { router, health, fetchMock };
 }
 
 // --- adapter ---------------------------------------------------------------
@@ -190,6 +216,57 @@ describe('OpenAI-compatible adapter', () => {
     } catch (error) {
       expect(JSON.stringify(error)).not.toContain(KEY_A);
       expect((error as Error).message).not.toContain(KEY_A);
+    }
+  });
+  it('invokes default fetch through a wrapper that preserves this context', async () => {
+    // Regression: Cloudflare Workers native fetch throws "Illegal invocation"
+    // when detached from globalThis (e.g. stored as a bare function reference).
+    // The adapter must bind globalThis.fetch so the call site always invokes
+    // it with the correct receiver, not as a detached ref.
+    let calledWithCorrectContext = false;
+    const originalFetch = globalThis.fetch;
+    const fakeNativeFetch = function (this: unknown): Promise<Response> {
+      if (this === undefined || this === null) {
+        throw new TypeError('Illegal invocation: function called with incorrect `this` reference.');
+      }
+      calledWithCorrectContext = true;
+      return Promise.resolve(completion('context-ok'));
+    };
+    globalThis.fetch = fakeNativeFetch as typeof fetch;
+    try {
+      const adapter = new OpenAICompatibleAdapter({ id: 'p1', baseUrl: 'https://ai-one.test', apiKey: KEY_A });
+      await adapter.generate(agentInput('m'));
+      expect(calledWithCorrectContext).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it('survives globalThis.fetch being replaced after adapter construction', async () => {
+    // Regression: .bind(globalThis) captures the function reference at
+    // construction time. If globalThis.fetch is later swapped (e.g. by a
+    // polyfill or test harness), the adapter must still call the ORIGINAL
+    // bound function with the correct this, not the replacement.
+    const originalFetch = globalThis.fetch;
+    let originalCalled = false;
+    const fakeOriginal = function (this: unknown): Promise<Response> {
+      if (this === undefined || this === null) {
+        throw new TypeError('Illegal invocation: function called with incorrect `this` reference.');
+      }
+      originalCalled = true;
+      return Promise.resolve(completion('bound-ok'));
+    };
+    globalThis.fetch = fakeOriginal as typeof fetch;
+    try {
+      const adapter = new OpenAICompatibleAdapter({ id: 'p1', baseUrl: 'https://ai-one.test', apiKey: KEY_A });
+      // Replace globalThis.fetch AFTER construction — the adapter must still
+      // invoke the original bound reference.
+      globalThis.fetch = (() => {
+        throw new Error('should not be called');
+      }) as typeof fetch;
+      await adapter.generate(agentInput('m'));
+      expect(originalCalled).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });
@@ -324,29 +401,7 @@ describe('credential ordering', () => {
 
 describe('AI router', () => {
   let now = 1_000_000;
-  const nowMs = (): number => now;
 
-  function makeRouter(opts: {
-    providers?: ProviderDirectoryEntry[];
-    credentials?: StoredCredential[];
-    fetchMock?: FetchMock;
-    maxAttempts?: number;
-    cooldowns?: { rateLimitedMs?: number; serverErrorMs?: number; invalidCredentialMs?: number };
-  } = {}): { router: AIRouter; health: InMemoryRouterHealth; fetchMock: FetchMock } {
-    const health = new InMemoryRouterHealth(nowMs);
-    const fetchMock = opts.fetchMock ?? mockFetch(completion('routed!'));
-    const router = new AIRouter({
-      directory: new StaticProviderDirectory(opts.providers ?? [providerEntry()]),
-      credentialStore: new StaticCredentialStore(opts.credentials ?? [storedCredential()]),
-      health,
-      masterSecret: MASTER,
-      fetchImpl: fetchMock,
-      nowMs,
-      cooldowns: opts.cooldowns,
-      maxAttempts: opts.maxAttempts,
-    });
-    return { router, health, fetchMock };
-  }
 
   it('routes an explicit provider and passes the vendor model through', async () => {
     const { router, fetchMock } = makeRouter({
@@ -370,7 +425,139 @@ describe('AI router', () => {
     expect(callsOf(fetchMock)[0]?.url).toBe('https://ai-two.test/chat/completions');
     await router.generate(agentInput('p1:'));
     const calls = callsOf(fetchMock);
-    expect(calls[1]?.json['model']).toBe('default-m');
+    // Per-provider-default mode: ALL enabled providers are candidates, ordered
+    // by weight — p2 (w999) is attempted first with its own defaultModel. The
+    // anchor provider's own default applies when it is attempted.
+    expect(calls[1]?.url).toBe('https://ai-two.test/chat/completions');
+    expect(calls[1]?.json['model']).toBe('fallback-m');
+  });
+  it('splits model references on the FIRST colon, preserving colons inside model ids', async () => {
+    const { router, fetchMock } = makeRouter({
+      providers: [providerEntry({ id: 'openrouter', defaultModel: 'thinkingmachines/inkling:free' })],
+      credentials: [storedCredential({ id: 'ko', providerId: 'openrouter', ciphertext: SEALED_A })],
+    });
+    // Explicit reference with a multi-colon model id.
+    await router.generate(agentInput('openrouter:thinkingmachines/inkling:free'));
+    expect(callsOf(fetchMock)[0]?.json['model']).toBe('thinkingmachines/inkling:free');
+    // Existing single-segment references are unchanged.
+    await router.generate(agentInput('openrouter:some-model'));
+    expect(callsOf(fetchMock)[1]?.json['model']).toBe('some-model');
+    // Empty model part falls back to the provider default (itself colon-bearing).
+    await router.generate(agentInput('openrouter:'));
+    expect(callsOf(fetchMock)[2]?.json['model']).toBe('thinkingmachines/inkling:free');
+  });
+  it('normal-chat sentinel resolves to the highest-weight provider default_model on the wire', async () => {
+    // Mirrors the production path: orchestration resolves the flow sentinel
+    // through resolveRoutingProfile, then hands the rewritten reference to the
+    // AIRouter exactly as productionFlow wiring does.
+    const providers = [
+      providerEntry({ id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'thinkingmachines/inkling:free', weight: 500 }),
+      providerEntry({ id: 'zai', baseUrl: 'https://ai-two.test', defaultModel: 'glm-4.7-Flash', weight: 100 }),
+    ];
+    const credentials = [
+      storedCredential({ id: 'ko', providerId: 'openrouter', ciphertext: SEALED_A }),
+      storedCredential({ id: 'kz', providerId: 'zai', ciphertext: SEALED_B }),
+    ];
+    const routing = resolveRoutingProfile(undefined, {
+      model: 'router',
+      providers: providers.map((p) => ({ id: p.id, enabled: true, weight: p.weight })),
+    });
+    expect(routing.model).toBe('openrouter:');
+
+    const { router, fetchMock } = makeRouter({ providers, credentials });
+    await router.generate(agentInput(routing.model));
+    const calls = callsOf(fetchMock);
+    expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(calls[0]?.json['model']).toBe('thinkingmachines/inkling:free');
+
+    // Explicit multi-colon and single-segment references are untouched.
+    await router.generate(agentInput('openrouter:thinkingmachines/inkling:free'));
+    expect(callsOf(fetchMock)[1]?.json['model']).toBe('thinkingmachines/inkling:free');
+    await router.generate(agentInput('zai:glm-4.7-Flash'));
+    expect(callsOf(fetchMock)[2]?.url).toBe('https://ai-two.test/chat/completions');
+    expect(callsOf(fetchMock)[2]?.json['model']).toBe('glm-4.7-Flash');
+  });
+  it('per-provider-default mode (empty part) makes ALL enabled providers candidates, each with its own defaultModel', async () => {
+    const providers = [
+      providerEntry({ id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'thinkingmachines/inkling:free', weight: 500 }),
+      providerEntry({ id: 'zai', baseUrl: 'https://ai-two.test', defaultModel: 'glm-4.7-Flash', weight: 100 }),
+    ];
+    const credentials = [
+      storedCredential({ id: 'ko', providerId: 'openrouter', ciphertext: SEALED_A }),
+      storedCredential({ id: 'kz', providerId: 'zai', ciphertext: SEALED_B }),
+    ];
+    // Bind the production routing-profile path: the normal-chat sentinel must
+    // resolve to the anchor provider with an empty model part.
+    const routing = resolveRoutingProfile(undefined, {
+      model: 'router',
+      providers: providers.map((p) => ({ id: p.id, enabled: true, weight: p.weight })),
+    });
+    expect(routing.model).toBe('openrouter:');
+
+    const fetchMock = mockFetch((url) => (String(url).includes('openrouter') ? new Response('down', { status: 500 }) : completion('zai-saves')));
+    const { router } = makeRouter({ providers, credentials, fetchMock });
+    const result = await router.generate(agentInput(routing.model));
+    expect(result.text).toBe('zai-saves');
+    const calls = callsOf(fetchMock);
+    // A+B+C+D+E: first provider fails (500), second succeeds — each attempt
+    // uses THAT provider's own defaultModel, never the anchor's.
+    expect(calls.length).toBe(2);
+    expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(calls[0]?.json['model']).toBe('thinkingmachines/inkling:free');
+    expect(calls[1]?.url).toBe('https://ai-two.test/chat/completions');
+    expect(calls[1]?.json['model']).toBe('glm-4.7-Flash');
+  });
+
+  it('explicit id:model stays single-provider: no cross-provider failover', async () => {
+    const providers = [
+      providerEntry({ id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'thinkingmachines/inkling:free', weight: 500 }),
+      providerEntry({ id: 'zai', baseUrl: 'https://ai-two.test', defaultModel: 'glm-4.7-Flash', weight: 100 }),
+    ];
+    const credentials = [
+      storedCredential({ id: 'ko', providerId: 'openrouter', ciphertext: SEALED_A }),
+      storedCredential({ id: 'kz', providerId: 'zai', ciphertext: SEALED_B }),
+    ];
+    const fetchMock = mockFetch(new Response('down', { status: 500 }));
+    const { router } = makeRouter({ providers, credentials, fetchMock });
+    await expect(router.generate(agentInput('openrouter:some-model'))).rejects.toMatchObject({ name: 'ProviderError' });
+    const calls = callsOf(fetchMock);
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(calls[0]?.json['model']).toBe('some-model');
+  });
+
+  it('bare models keep existing behavior: shared vendorModel across provider failover', async () => {
+    const providers = [
+      providerEntry({ id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'thinkingmachines/inkling:free', weight: 500 }),
+      providerEntry({ id: 'zai', baseUrl: 'https://ai-two.test', defaultModel: 'glm-4.7-Flash', weight: 100 }),
+    ];
+    const credentials = [
+      storedCredential({ id: 'ko', providerId: 'openrouter', ciphertext: SEALED_A }),
+      storedCredential({ id: 'kz', providerId: 'zai', ciphertext: SEALED_B }),
+    ];
+    const fetchMock = mockFetch((url) => (String(url).includes('openrouter') ? new Response('down', { status: 500 }) : completion('shared-saves')));
+    const { router } = makeRouter({ providers, credentials, fetchMock });
+    const result = await router.generate(agentInput('shared-vendor-model'));
+    expect(result.text).toBe('shared-saves');
+    const calls = callsOf(fetchMock);
+    expect(calls.length).toBe(2);
+    expect(calls[0]?.json['model']).toBe('shared-vendor-model');
+    expect(calls[1]?.json['model']).toBe('shared-vendor-model');
+  });
+
+  it('per-provider-default mode still aborts immediately on non-retryable 4xx', async () => {
+    const providers = [
+      providerEntry({ id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'thinkingmachines/inkling:free', weight: 500 }),
+      providerEntry({ id: 'zai', baseUrl: 'https://ai-two.test', defaultModel: 'glm-4.7-Flash', weight: 100 }),
+    ];
+    const credentials = [
+      storedCredential({ id: 'ko', providerId: 'openrouter', ciphertext: SEALED_A }),
+      storedCredential({ id: 'kz', providerId: 'zai', ciphertext: SEALED_B }),
+    ];
+    const fetchMock = mockFetch(new Response('bad request', { status: 400 }));
+    const { router } = makeRouter({ providers, credentials, fetchMock });
+    await expect(router.generate(agentInput('openrouter:'))).rejects.toMatchObject({ name: 'ProviderError', code: 'upstream', httpStatus: 400 });
+    expect(callsOf(fetchMock).length).toBe(1);
   });
   it('rejects unknown providers and leading-colon models without calling fetch', async () => {
     const { router, fetchMock } = makeRouter();
@@ -401,6 +588,7 @@ describe('AI router', () => {
     });
     const { router, health } = makeRouter({
       fetchMock,
+      nowMs: () => now,
       cooldowns: { rateLimitedMs: 60_000, serverErrorMs: 1_000 },
       credentials: [storedCredential({ id: 'ka', ciphertext: SEALED_A }), storedCredential({ id: 'kb', ciphertext: SEALED_B })],
     });
@@ -509,7 +697,7 @@ describe('AI router', () => {
       new AIRouter({
         directory: new StaticProviderDirectory([providerEntry()]),
         credentialStore: new StaticCredentialStore([]),
-        health: new InMemoryRouterHealth(nowMs),
+        health: new InMemoryRouterHealth(defaultNowMs),
         masterSecret: '',
       }),
     ).toThrow('Credential master secret is not configured');
@@ -527,12 +715,193 @@ describe('AI router', () => {
   });
 });
 
+describe('TEMP-DIAGNOSTIC attempt-failure metadata', () => {
+  // Fake-only scenario tests for the production-failure diagnostic layer.
+  // Every assertion uses fake keys / fake prompts; real keys never appear.
+
+  let spy: { mock: { calls: Array<Array<unknown>> }; mockRestore: () => void };
+  let errorLines: Array<Record<string, unknown>>;
+
+  function startCapture(): void {
+    const s = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    spy = s as unknown as { mock: { calls: Array<Array<unknown>> }; mockRestore: () => void };
+    errorLines = [];
+  }
+
+  function stopCapture(): Array<Record<string, unknown>> {
+    for (const call of spy.mock.calls) {
+      for (const arg of call) {
+        if (typeof arg !== 'string') continue;
+        const trimmed = arg.trim();
+        if (!trimmed.startsWith('{')) continue;
+        try {
+          errorLines.push(JSON.parse(trimmed) as Record<string, unknown>);
+        } catch {
+          // ignore non-JSON stderr lines
+        }
+      }
+    }
+    spy.mockRestore();
+    return errorLines;
+  }
+
+  function leaked(lines: Array<Record<string, unknown>>): string {
+    return JSON.stringify(lines);
+  }
+
+  async function runAttempt(status: number, body: string, contentType: string): Promise<Array<Record<string, unknown>>> {
+    startCapture();
+    const fetchMock = mockFetch(
+      new Response(body, { status, headers: { 'content-type': contentType } }),
+    );
+    const { router } = makeRouter({
+      providers: [providerEntry({ id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1' })],
+      credentials: [storedCredential({ id: 'dk', providerId: 'openrouter', ciphertext: SEALED_A })],
+      fetchMock,
+    });
+    await router.generate(agentInput('openrouter:m')).catch(() => undefined);
+    return stopCapture();
+  }
+
+  it('OpenRouter 401 records status, phase, endpoint, and sanitized body — never secrets', async () => {
+    const lines = await runAttempt(401, '{"error":{"message":"No auth credentials found","code":401}}', 'application/json');
+    const attempts = lines.filter((l) => l['event'] === 'provider_attempt_failed');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      provider_id: 'openrouter',
+      code: 'upstream',
+      http_status: 401,
+      failure_phase: 'http',
+      endpoint_host: 'openrouter.ai',
+      endpoint_path: '/api/v1/chat/completions',
+      content_type: 'application/json',
+    });
+    expect(String(attempts[0]?.['detail'])).toContain('No auth credentials found');
+    const blob = leaked(lines);
+    expect(blob).not.toContain(KEY_A);
+    expect(blob).not.toContain('hello');
+    expect(blob).not.toContain('Authorization');
+    expect(blob).not.toContain('Bearer');
+  });
+
+  it('OpenRouter 402 records status and phase', async () => {
+    const lines = await runAttempt(402, '{"error":{"message":"Insufficient credits."}}', 'application/json');
+    const attempts = lines.filter((l) => l['event'] === 'provider_attempt_failed');
+    expect(attempts[0]).toMatchObject({ code: 'upstream', http_status: 402, failure_phase: 'http' });
+    expect(String(attempts[0]?.['detail'])).toContain('Insufficient credits.');
+  });
+
+  it('OpenRouter 429 records status and phase', async () => {
+    const lines = await runAttempt(429, '{"error":{"message":"Rate limit exceeded"}}', 'application/json');
+    const attempts = lines.filter((l) => l['event'] === 'provider_attempt_failed');
+    expect(attempts[0]).toMatchObject({ code: 'upstream', http_status: 429, failure_phase: 'http' });
+  });
+
+  it('OpenRouter 500 records status and phase', async () => {
+    const lines = await runAttempt(500, '{"error":{"message":"Upstream timeout"}}', 'application/json');
+    const attempts = lines.filter((l) => l['event'] === 'provider_attempt_failed');
+    expect(attempts[0]).toMatchObject({ code: 'upstream', http_status: 500, failure_phase: 'http' });
+  });
+
+  it('Z.AI 401 records provider, status, and phase', async () => {
+    startCapture();
+    const fetchMock = mockFetch(
+      new Response('{"error":{"code":"1104","msg":"invalid token"}}', { status: 401, headers: { 'content-type': 'application/json; charset=utf-8' } }),
+    );
+    const { router } = makeRouter({
+      providers: [providerEntry({ id: 'zai', baseUrl: 'https://api.z.ai/api/paas/v4' })],
+      credentials: [storedCredential({ id: 'dk', providerId: 'zai', ciphertext: SEALED_A })],
+      fetchMock,
+    });
+    await router.generate(agentInput('zai:m')).catch(() => undefined);
+    const lines = stopCapture();
+    const attempts = lines.filter((l) => l['event'] === 'provider_attempt_failed');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      provider_id: 'zai',
+      http_status: 401,
+      failure_phase: 'http',
+      endpoint_host: 'api.z.ai',
+      endpoint_path: '/api/paas/v4/chat/completions',
+    });
+    expect(String(attempts[0]?.['detail'])).toContain('invalid token');
+  });
+
+  it('Z.AI 400 records status without failover', async () => {
+    startCapture();
+    const fetchMock = mockFetch(
+      new Response('{"error":{"message":"invalid params"}}', { status: 400, headers: { 'content-type': 'application/json' } }),
+    );
+    const { router } = makeRouter({
+      providers: [providerEntry({ id: 'zai', baseUrl: 'https://api.z.ai/api/paas/v4' })],
+      credentials: [storedCredential({ id: 'dk', providerId: 'zai', ciphertext: SEALED_A })],
+      fetchMock,
+    });
+    await router.generate(agentInput('zai:m')).catch(() => undefined);
+    const lines = stopCapture();
+    const attempts = lines.filter((l) => l['event'] === 'provider_attempt_failed');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ http_status: 400, failure_phase: 'http' });
+  });
+
+  it('malformed 2xx response is classified as schema phase, not transport', async () => {
+    startCapture();
+    const fetchMock = mockFetch(
+      new Response('{"choices": []}', { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    const { router } = makeRouter({
+      providers: [providerEntry({ id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1' })],
+      credentials: [storedCredential({ id: 'dk', providerId: 'openrouter', ciphertext: SEALED_A })],
+      fetchMock,
+    });
+    await router.generate(agentInput('openrouter:m')).catch(() => undefined);
+    const lines = stopCapture();
+    const attempts = lines.filter((l) => l['event'] === 'provider_attempt_failed');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ code: 'malformed', failure_phase: 'schema' });
+    expect(attempts[0]?.['http_status']).toBeUndefined();
+    expect(leaked(lines)).not.toContain(KEY_A);
+    expect(leaked(lines)).not.toContain('hello');
+  });
+
+  it('network failure is classified as network phase without a status', async () => {
+    startCapture();
+    const fetchMock = mockFetch(async () => {
+      throw new TypeError('fetch failed');
+    });
+    const { router } = makeRouter({
+      providers: [providerEntry({ id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1' })],
+      credentials: [storedCredential({ id: 'dk', providerId: 'openrouter', ciphertext: SEALED_A })],
+      fetchMock,
+    });
+    await router.generate(agentInput('openrouter:m')).catch(() => undefined);
+    const lines = stopCapture();
+    const attempts = lines.filter((l) => l['event'] === 'provider_attempt_failed');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ code: 'upstream', failure_phase: 'network' });
+    expect(attempts[0]?.['http_status']).toBeUndefined();
+    expect(String(attempts[0]?.['detail'])).toContain('fetch failed');
+    expect(leaked(lines)).not.toContain(KEY_A);
+    expect(leaked(lines)).not.toContain('hello');
+  });
+  it("never leaks credentials through router errors", async () => {
+    const fetchMock = mockFetch(new Response('down', { status: 500 }));
+    const { router } = makeRouter({ fetchMock });
+    try {
+      await router.generate(agentInput('p1:m'));
+      expect.unreachable();
+    } catch (error) {
+      expect(JSON.stringify(error)).not.toContain(KEY_A);
+      expect((error as Error).message).not.toContain(KEY_A);
+    }
+  });
+});
 // --- core integration ----------------------------------------------------------
 
 const integrationNow = (): number => 1_000_000;
 
 describe('agent core integration', () => {
-  it('runs AgentRequest → router → adapter → AgentResponse with fakes only', async () => {
+  it('runs AgentRequest ΓåÆ router ΓåÆ adapter ΓåÆ AgentResponse with fakes only', async () => {
     const fetchMock = mockFetch(completion('integrated!', { prompt_tokens: 7, completion_tokens: 4 }));
     const router = new AIRouter({
       directory: new StaticProviderDirectory([providerEntry()]),

@@ -69,7 +69,7 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
     this.model = options.model;
     this.dimensions = options.dimensions;
     this.apiKey = options.apiKey;
-    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.fetchImpl = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args));
     this.timeoutMs = options.timeoutMs ?? DEFAULT_EMBEDDING_TIMEOUT_MS;
   }
 

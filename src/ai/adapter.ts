@@ -15,6 +15,12 @@ import type { ModelProvider, ProviderGenerateInput, ProviderGenerateResult } fro
 export const OPENAI_CHAT_COMPLETIONS_PATH = '/chat/completions';
 export const DEFAULT_ADAPTER_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 512 * 1024;
+// TEMP-DIAGNOSTIC (remove after production triage): bounded sanitized detail.
+const MAX_DETAIL_CHARS = 200;
+
+function sanitizeDetail(text: string): string {
+  return text.replace(/[^\x20-\x7E]/g, '?').slice(0, MAX_DETAIL_CHARS);
+}
 
 export interface OpenAICompatibleAdapterOptions {
   id: string;
@@ -44,12 +50,12 @@ export class OpenAICompatibleAdapter implements ModelProvider {
     this.id = options.id;
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
-    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.timeoutMs = timeoutMs;
   }
 
   async generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult> {
-    if (input.signal?.aborted === true) throw new ProviderError('timeout');
+    if (input.signal?.aborted === true) throw new ProviderError('timeout', undefined, { phase: 'network' });
 
     const body = JSON.stringify({
       model: input.model,
@@ -78,38 +84,67 @@ export class OpenAICompatibleAdapter implements ModelProvider {
       // Aborts (own timeout or caller cancellation) are timeouts; transport
       // failures are upstream. Neither carries detail outward.
       if (typeof error === 'object' && error !== null && 'name' in error && (error as { name: unknown }).name === 'AbortError') {
-        throw new ProviderError('timeout');
+        throw new ProviderError('timeout', undefined, { phase: 'network' });
       }
-      throw new ProviderError('upstream');
+      // TEMP-DIAGNOSTIC (remove after production triage): network-phase
+      // classification with a sanitized bounded transport message (e.g.
+      // \"TypeError: fetch failed\") — never headers, keys, or bodies.
+      throw new ProviderError('upstream', undefined, {
+        phase: 'network',
+        detail: sanitizeDetail(error instanceof Error ? `${error.name}: ${error.message}` : String(error)),
+      });
     } finally {
       clearTimeout(timer);
       input.signal?.removeEventListener('abort', onCallerAbort);
     }
 
     if (!response.ok) {
-      // Drain nothing: the status alone drives policy. Bodies are never read
-      // into errors (they may contain provider-specific payloads).
-      throw new ProviderError('upstream', response.status);
+      // Drain the failure body ONLY for bounded diagnostics: sanitized,
+      // ≤200 printable characters. Never propagated to users or Agent Core.
+      const contentType = response.headers.get('content-type') ?? undefined;
+      let detail: string | undefined;
+      try {
+        detail = sanitizeDetail(await response.text());
+      } catch {
+        detail = undefined;
+      }
+      // Status alone still drives policy; the body is diagnostic metadata only.
+      throw new ProviderError('upstream', response.status, { phase: 'http', ...(detail !== undefined ? { detail } : {}), ...(contentType !== undefined ? { contentType } : {}) });
     }
 
     let payload: unknown;
+    let rawText: string | undefined;
+    const contentType = response.headers.get('content-type') ?? undefined;
     try {
-      const text = await response.text();
-      if (text.length === 0 || text.length > MAX_RESPONSE_BYTES) throw new ProviderError('malformed');
-      payload = JSON.parse(text) as unknown;
+      rawText = await response.text();
+      if (rawText.length === 0 || rawText.length > MAX_RESPONSE_BYTES) {
+        // TEMP-DIAGNOSTIC (remove after production triage): parse-phase metadata.
+        throw new ProviderError('malformed', undefined, {
+          phase: 'parse',
+          detail: rawText.length === 0 ? 'empty body' : 'body exceeds size limit',
+          ...(contentType !== undefined ? { contentType } : {}),
+        });
+      }
+      payload = JSON.parse(rawText) as unknown;
     } catch (error) {
       if (error instanceof ProviderError) throw error;
-      throw new ProviderError('malformed');
+      // TEMP-DIAGNOSTIC (remove after production triage): parse-phase metadata.
+      throw new ProviderError('malformed', undefined, {
+        phase: 'parse',
+        ...(rawText !== undefined ? { detail: sanitizeDetail(rawText) } : {}),
+        ...(contentType !== undefined ? { contentType } : {}),
+      });
     }
 
-    if (!isRecord(payload)) throw new ProviderError('malformed');
+    // TEMP-DIAGNOSTIC (remove after production triage): schema-phase metadata.
+    if (!isRecord(payload)) throw new ProviderError('malformed', undefined, { phase: 'schema', detail: 'payload not an object' });
     const choices = payload['choices'];
-    if (!Array.isArray(choices) || choices.length === 0) throw new ProviderError('malformed');
+    if (!Array.isArray(choices) || choices.length === 0) throw new ProviderError('malformed', undefined, { phase: 'schema', detail: 'missing or empty choices' });
     const first = choices[0];
-    if (!isRecord(first)) throw new ProviderError('malformed');
+    if (!isRecord(first)) throw new ProviderError('malformed', undefined, { phase: 'schema', detail: 'first choice not an object' });
     const message = first['message'];
     if (!isRecord(message) || typeof message['content'] !== 'string' || (message['content'] as string).length === 0)
-      throw new ProviderError('malformed');
+      throw new ProviderError('malformed', undefined, { phase: 'schema', detail: 'missing or empty message content' });
 
     const result: ProviderGenerateResult = {
       text: message['content'] as string,
@@ -123,7 +158,8 @@ export class OpenAICompatibleAdapter implements ModelProvider {
         (inputTokens !== undefined && (!Number.isInteger(inputTokens) || (inputTokens as number) < 0)) ||
         (outputTokens !== undefined && (!Number.isInteger(outputTokens) || (outputTokens as number) < 0))
       ) {
-        throw new ProviderError('malformed');
+        // TEMP-DIAGNOSTIC (remove after production triage): schema-phase metadata.
+        throw new ProviderError('malformed', undefined, { phase: 'schema', detail: 'invalid usage token fields' });
       }
       if (inputTokens !== undefined || outputTokens !== undefined) {
         result.usage = {};
