@@ -1,32 +1,84 @@
-# Testing and validation
+# Testing and Validation
 
-[Back to the README](README.md) · [Development](DEVELOPMENT.md) · [Security](SECURITY.md)
+[Back to README](README.md) · [Development](DEVELOPMENT.md) · [Security](SECURITY.md)
 
-## Tooling
+## Test stack
 
-The repository uses Vitest with `@cloudflare/vitest-pool-workers`, local D1 bindings, TypeScript, ESLint, Wrangler dry-run builds, and npm audit.
+HawkTalk uses:
 
-## Commands
+- Vitest,
+- `@cloudflare/vitest-pool-workers`,
+- local D1 bindings,
+- TypeScript,
+- ESLint,
+- Wrangler dry-run builds,
+- npm audit.
+
+## Full validation
 
 ```bash
-npm test
-npm run typecheck
-npm run lint
-npm run build
-npm run security
 npm run check
 ```
 
-`npm run check` runs type generation/typechecking, linting, tests, a Wrangler dry-run build, and the dependency audit.
+This performs:
+
+```text
+type generation
+→ TypeScript
+→ ESLint
+→ Vitest
+→ Wrangler dry-run
+→ npm audit
+```
 
 ## Coverage areas
 
-Tests cover routing and Worker behavior, Telegram parsing/webhooks/idempotency, Agent Core validation, provider adapters and routing, conversations and D1 schema, admission/quota behavior, orchestration, tools/SSRF/research, admin authorization and confirmations, usage, and semantic memory. The test suite is the source of truth for exact case counts.
+The test suite is expected to cover the major security and ownership boundaries, including:
 
-## Security-sensitive changes
+- Worker routing,
+- webhook authentication,
+- Telegram parsing,
+- durable update idempotency,
+- internal-user identity,
+- admission / quotas / rate windows,
+- Agent Core validation and bounds,
+- provider routing and credential behavior,
+- conversation ownership and sequence allocation,
+- tool input validation,
+- SSRF defenses,
+- web research bounds,
+- administration and confirmations,
+- usage recording,
+- semantic memory isolation and graceful degradation.
 
-Preserve tests for webhook authentication, private-chat isolation, duplicate delivery, owner scoping, credential sealing, generic errors, SSRF blocking, prompt/tool delimiters, quota atomicity, admin authorization, confirmation expiry, audit behavior, and fail-closed bindings.
+## Security-sensitive testing
+
+Changes touching security boundaries should preserve or add tests for:
+
+- incorrect webhook secrets,
+- oversized requests,
+- malformed Telegram updates,
+- duplicate delivery,
+- cross-user access,
+- blocked users,
+- unauthorized admin actions,
+- credential sealing,
+- provider failure / failover,
+- generic error handling,
+- private / metadata / local network URL rejection,
+- prompt-injection delimiters,
+- bounded tool output,
+- memory ownership filters.
 
 ## Production smoke tests
 
-After a human-controlled deployment, use [docs/SMOKE-TESTS.md](docs/SMOKE-TESTS.md). Local tests and dry-run builds do not prove Telegram delivery, Cloudflare bindings, provider availability, or production routing.
+A passing local test suite does not prove:
+
+- Telegram can reach the deployed webhook,
+- production secrets are configured,
+- Cloudflare bindings are correct,
+- provider credentials are valid,
+- Vectorize is available,
+- external websites are reachable.
+
+Run [docs/SMOKE-TESTS.md](docs/SMOKE-TESTS.md) after a human-controlled deployment.

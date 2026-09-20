@@ -1,0 +1,6 @@
+# Default owner for repository changes
+* @Greenhawk5
+
+# Security-sensitive documentation and workflows
+/SECURITY.md @Greenhawk5
+/.github/ @Greenhawk5

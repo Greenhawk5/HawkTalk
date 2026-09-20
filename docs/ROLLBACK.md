@@ -1,63 +1,65 @@
 # HawkTalk Rollback Procedure
 
-## Worker Deployment Rollback
+## Worker rollback
 
-To revert to a previous Worker deployment:
+Use Cloudflare's documented rollback mechanism or redeploy a known-good commit after reviewing the target version.
+
+Example:
 
 ```bash
 wrangler rollback --env production
 ```
 
-Or redeploy a known-good commit:
+Or:
 
 ```bash
 git checkout <KNOWN_GOOD_COMMIT>
 wrangler deploy --env production
 ```
 
-Cloudflare Workers automatically maintains the previous deployment version. `wrangler rollback` restores it immediately with near-zero downtime.
+Do not assume that a code rollback reverses a D1 schema migration.
 
-## Telegram Webhook Disable/Repoint
+## Telegram emergency stop
 
-### Disable webhook entirely (stops all message processing)
+To stop inbound processing immediately:
 
 ```bash
 curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/deleteWebhook"
 ```
 
-### Repoint to a different URL (e.g., staging or previous worker)
-
-```bash
-curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "<NEW_WORKER_URL>/telegram/webhook",
-    "secret_token": "<WEBHOOK_SECRET>"
-  }'
-```
-
-### Verify current webhook status
+To verify:
 
 ```bash
 curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
 ```
 
-## Database Migration Warning
+To repoint Telegram to a known-good Worker:
 
-D1 migrations are NOT reversible through wrangler. Once applied, migration state is tracked in the `d1_migrations` table and will not re-run. Rolling back code that depends on a new schema column/table while leaving the migration applied is safe (the extra columns/tables simply go unused). However, rolling back code after a migration has modified or dropped columns may cause runtime errors.
+```bash
+curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://<KNOWN_GOOD_HOSTNAME>/telegram/webhook",
+    "secret_token": "<WEBHOOK_SECRET>"
+  }'
+```
 
-### If deployment is reverted but migration already applied
+## Database considerations
 
-- Extra tables/columns from the forward migration remain in the database. This is harmless.
-- The rolled-back code will not reference the new schema elements.
-- If the forward migration renamed or dropped columns (none currently do), manual D1 SQL intervention would be required via `wrangler d1 execute`.
-- Current migrations (0001-0010) are purely additive (CREATE TABLE, ALTER TABLE ADD COLUMN). No destructive schema changes exist. Rollback is always safe with these migrations.
+D1 migrations are forward application events.
 
-## Emergency Full Stop
+When rolling back application code:
 
-If something is critically wrong and you need to halt all processing immediately:
+- additive schema changes can remain in place if old code does not reference them,
+- destructive or incompatible schema changes require an explicit recovery plan,
+- never edit an applied migration file to simulate a rollback.
 
-1. Delete the Telegram webhook (stops inbound traffic)
-2. Optionally set a maintenance secret to invalidate webhook auth
-3. Roll back the Worker deployment
-4. Re-register the webhook once the correct version is deployed
+Before emergency schema changes, preserve evidence and confirm the expected production state.
+
+## Full stop
+
+1. Delete the Telegram webhook.
+2. Stop or roll back the Worker deployment as appropriate.
+3. Preserve sanitized logs and request IDs.
+4. Investigate the failure.
+5. Re-register the webhook only after the known-good path is validated.

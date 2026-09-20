@@ -1,7 +1,48 @@
 # Support
 
-[Back to the README](README.md) · [Security](SECURITY.md)
+## Before asking for help
 
-This checkout does not configure a public issue tracker, maintainer email, or community forum. Until one is supplied by the project owner, use the repository documentation and local test output as the available support path.
+1. Read the [README](README.md).
+2. Check [existing Issues](https://github.com/Greenhawk5/HawkTalk/issues).
+3. Reproduce the problem on the current `main` branch when possible.
+4. Run `npm run check` and record the relevant failure.
+5. Remove secrets and private data from all logs before sharing them.
 
-When reporting a problem privately, include Node.js/npm versions, command, smallest reproduction, expected behavior, actual behavior, and sanitized output. Never include tokens, credentials, private URLs, message content, or encryption keys.
+## Where to ask
+
+For reproducible bugs and technical problems, use GitHub Issues:
+
+https://github.com/Greenhawk5/HawkTalk/issues
+
+For feature requests, clearly describe the use case and the expected behavior.
+
+For security vulnerabilities, **do not use public Issues**. Follow [SECURITY.md](SECURITY.md).
+
+## Include
+
+Useful reports normally include:
+
+- OS,
+- Node.js version,
+- npm version,
+- Wrangler version,
+- relevant command,
+- component or route,
+- minimal reproduction,
+- expected behavior,
+- actual behavior,
+- sanitized error output.
+
+Never include:
+
+- Telegram bot tokens,
+- provider keys,
+- encryption keys,
+- Cloudflare API tokens,
+- private endpoints,
+- user message contents,
+- private production data.
+
+## Current support status
+
+HawkTalk does not currently advertise a dedicated SLA, community forum, or guaranteed response time.

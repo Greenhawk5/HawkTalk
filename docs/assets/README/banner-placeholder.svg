@@ -1,7 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
-  <title id="title">HawkTalk banner placeholder</title>
-  <desc id="desc">Reserved visual asset location for a future HawkTalk project banner.</desc>
-  <rect width="1200" height="280" rx="24" fill="#111827"/>
-  <text x="600" y="130" text-anchor="middle" fill="#f9fafb" font-family="Arial, sans-serif" font-size="52" font-weight="700">HawkTalk</text>
-  <text x="600" y="180" text-anchor="middle" fill="#93c5fd" font-family="Arial, sans-serif" font-size="22">Future project banner asset</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">HawkTalk</title>
+  <desc id="desc">Placeholder banner for the HawkTalk repository README.</desc>
+  <rect width="1200" height="300" fill="#0b1020"/>
+  <circle cx="980" cy="90" r="150" fill="#1a2a52" opacity="0.55"/>
+  <circle cx="190" cy="230" r="180" fill="#19355c" opacity="0.35"/>
+  <text x="70" y="135" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="64" font-weight="700">HawkTalk</text>
+  <text x="70" y="185" fill="#a8b5cc" font-family="Inter, Arial, sans-serif" font-size="28">Telegram-first · Provider-independent · Cloudflare Workers</text>
+  <text x="70" y="230" fill="#6f84a8" font-family="Inter, Arial, sans-serif" font-size="20">Documentation placeholder — replace with the project's final visual asset.</text>
 </svg>

@@ -1,32 +1,42 @@
-# Development guide
+# Development Guide
 
-[Back to the README](README.md) · [Testing](TESTING.md) · [Architecture](ARCHITECTURE.md)
+[Back to README](README.md) · [Testing](TESTING.md) · [Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
 ## Prerequisites
 
 - Node.js `>=22.13.0 <23`
-- npm and Wrangler
+- npm
+- Wrangler
 - PowerShell or an equivalent shell
-
-Install dependencies with `npm install`. If npm reproduces the repository's documented arborist issue, use the existing workaround rather than changing dependency versions casually.
 
 ## Local setup
 
 ```powershell
+git clone https://github.com/Greenhawk5/HawkTalk.git
+cd HawkTalk
+npm install
 Copy-Item .dev.vars.example .dev.vars
 npm run db:migrate:local
 npm run dev
 ```
 
-`.dev.vars` is local-only and ignored. Telegram secrets are optional for health and unit tests; the webhook path fails closed without the required secret.
+The local Worker is configured around Wrangler's local D1 state. Do not use production bindings for routine development.
 
-## Project map
+## Project structure
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for boundaries. `src/` contains runtime code, `tests/` contains Vitest suites, `migrations/` contains ordered D1 migrations, and `docs/` contains operational detail.
+```text
+src/            Runtime implementation
+tests/          Vitest suites
+migrations/     Ordered D1 migrations
+scripts/        Operational/provisioning utilities
+docs/           Detailed architecture and operations
+.github/        CI, templates, dependency automation
+```
 
 ## Validation
 
 ```bash
+npm run types
 npm run typecheck
 npm run lint
 npm test
@@ -35,16 +45,72 @@ npm run security
 npm run check
 ```
 
-Run focused tests with `npx vitest run tests/memory.test.ts` or another relevant test file.
+## Focused tests
 
-## Providers, tools, and memory
+```bash
+npx vitest run tests/memory.test.ts
+npx vitest run tests/<relevant-suite>.test.ts
+```
 
-New model providers implement the provider boundary and keep credentials inside the AI adapter/router layer. New tools must have validated inputs, bounded execution/output, generic failure categories, and malformed-input/timeout tests. Memory changes must preserve owner filtering, explicit command semantics, untrusted context delimiters, and fail-closed behavior when Workers AI or Vectorize is unavailable.
+## Providers
 
-## Migrations
+Add or modify providers through the provider abstraction rather than coupling Telegram or Agent Core to a specific vendor.
 
-Add a new numbered SQL migration; do not edit an applied migration. Test replay/idempotency and update database tests when schema changes. Remote migration application is covered by [DEPLOYMENT.md](DEPLOYMENT.md).
+Provider credentials must remain inside the AI credential boundary. Do not pass API keys through chat, commit them to source, or add them to general-purpose logs.
 
-## Contribution workflow
+## Tools
 
-Keep changes focused, run relevant tests and `npm run check`, inspect the final diff for secrets, and update documentation when behavior or operational steps change. See [CONTRIBUTING.md](CONTRIBUTING.md).
+New tools must have:
+
+- validated input,
+- bounded execution,
+- bounded output,
+- safe failure behavior,
+- tests for malformed input,
+- timeout / failure tests,
+- explicit treatment of external data as untrusted.
+
+## Memory
+
+Memory changes must preserve:
+
+- internal-user ownership scoping,
+- explicit command semantics,
+- untrusted-context delimiters,
+- safe degradation when Workers AI or Vectorize is unavailable.
+
+## Database migrations
+
+Add a new numbered migration.
+
+Do not:
+
+- edit an already-applied migration,
+- reorder migration numbers,
+- silently change ownership semantics,
+- remove compatibility needed by the previous application version.
+
+Test migration replay/idempotency when schema behavior changes.
+
+## Local secret handling
+
+`.dev.vars` is intentionally ignored. Never commit it.
+
+For production, use:
+
+```bash
+wrangler secret put <SECRET_NAME> --env production
+```
+
+Do not use command-line arguments to transmit provider API keys.
+
+## Release discipline
+
+Before a release:
+
+1. run `npm run check`,
+2. inspect the final diff,
+3. update CHANGELOG,
+4. verify documentation,
+5. confirm no secrets are staged,
+6. create a release tag only from the intended reviewed commit.

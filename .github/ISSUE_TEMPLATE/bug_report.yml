@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible problem in HawkTalk.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please remove secrets, tokens, private URLs, production user data, and sensitive chat content before submitting.
+
+        For security vulnerabilities, use SECURITY.md instead of a public issue.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem clearly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reliable reproduction.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+
+  - type: input
+    id: wrangler
+    attributes:
+      label: Wrangler version
+
+  - type: textarea
+    id: checks
+    attributes:
+      label: Validation output
+      description: Include sanitized output from relevant commands such as npm run check.

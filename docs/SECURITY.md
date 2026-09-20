@@ -1,28 +1,124 @@
-# HawkTalk security
+# HawkTalk Security Model
 
-[Back to the README](../README.md) · [Deployment](../DEPLOYMENT.md) · [Contributing](../CONTRIBUTING.md)
+[Back to README](../README.md) · [Security Policy](../SECURITY.md)
 
-This document describes controls implemented in the current repository. It is not a certification, penetration-test report, or guarantee of operational security.
+This document describes the security controls represented by the current architecture. It is not a security certification or penetration-test report.
 
-## Implemented controls
+## Request security
 
-- Webhook secret verification uses a constant-time comparison; malformed, oversized, unauthorized, and unsupported requests are bounded and handled safely.
-- Telegram conversational processing is restricted to private chats. Internal user IDs, conversation rows, messages, and semantic-memory records are owner-scoped.
-- `processed_updates` and processing states provide durable idempotency. Redeliveries do not regenerate started AI work or double-charge admission/usage ledgers.
-- Roles, quotas, rate windows, blocked-user handling, admin authorization, destructive-action confirmations, and append-only audit records are enforced server-side.
-- Provider credentials are encrypted at rest in D1 and decrypted only with the Worker secret. Secrets and upstream error details are not returned to users or ordinary logs.
-- Agent Core, tool parsing, execution, web fetch, response sizes, history, memory context, and retries have explicit bounds.
-- SSRF protections block local, private, link-local, metadata, multicast, and unsupported network targets. External content is marked untrusted before model use.
-- Missing production secrets, D1, Workers AI, or Vectorize dependencies fail closed or disable the dependent capability.
+The Telegram webhook path is expected to:
+
+- validate the expected secret header,
+- use constant-time comparison,
+- reject unsupported methods and content types,
+- bound request-body size,
+- reject malformed JSON,
+- validate Telegram update structure,
+- produce generic user-facing failures.
+
+## Identity and isolation
+
+HawkTalk processes conversational traffic for private chats.
+
+User-owned data is scoped by the application's internal user identity rather than raw Telegram identifiers.
+
+Ownership controls must exist at the data-access layer, not only in handler code.
+
+## Idempotency
+
+Telegram deliveries may be retried.
+
+`processed_updates` and processing state provide durable idempotency so that redeliveries do not regenerate already-started model work or duplicate usage effects.
+
+## Credentials
+
+Provider credentials are encrypted before storage in D1.
+
+The encryption master secret is supplied through the Worker secret system and never stored in source.
+
+Credentials must not travel through:
+
+- Telegram messages,
+- chat history,
+- ordinary logs,
+- shell arguments,
+- pull requests.
+
+## Agent Core boundary
+
+Agent Core is intentionally isolated from:
+
+- Telegram,
+- D1,
+- provider-specific credentials,
+- direct network access,
+- global mutable state.
+
+This reduces the blast radius of transport- and provider-specific logic.
+
+## Tool security
+
+Tool inputs and external content are untrusted.
+
+The web layer enforces bounded execution and blocks unsafe network targets, including local, private, link-local, metadata, multicast, and unsupported schemes where applicable.
+
+External text is explicitly delimited before it is placed into model context.
+
+## Prompt-injection resistance
+
+Research results and retrieved memory are data, not instructions.
+
+Tool outputs and memory context must never silently become higher-priority instructions than the system and application policies.
+
+## Administration
+
+Administrative operations require server-side authorization.
+
+Destructive actions use explicit confirmation state rather than relying on button visibility alone.
+
+Audit records should not contain plaintext credentials.
+
+## Availability and abuse controls
+
+The application includes:
+
+- admission policy,
+- quotas,
+- rate windows,
+- blocked-user handling,
+- bounded retries,
+- bounded tool execution,
+- bounded context and output sizes.
+
+## Fail-closed behavior
+
+Missing critical dependencies should not produce permissive fallback behavior.
+
+Examples include:
+
+- missing webhook secret → reject webhook traffic,
+- unavailable provider credentials → do not expose or fabricate credentials,
+- unavailable memory dependencies → disable memory while preserving ordinary conversation where designed,
+- unauthorized admin request → reject server-side.
 
 ## Operational responsibilities
 
-Keep `.dev.vars`, Worker secrets, Telegram tokens, encryption keys, Cloudflare credentials, provider keys, and private endpoints out of Git, logs, issues, screenshots, and documentation. Review bindings before production, rotate compromised credentials, apply migrations deliberately, and run the smoke-test checklist after deployment.
+Operators must:
 
-## Reporting
+- rotate exposed credentials,
+- keep `.dev.vars` untracked,
+- review Cloudflare bindings,
+- apply migrations deliberately,
+- review deployment diffs,
+- run smoke tests after deployment,
+- avoid placing production user data in issue reports.
 
-This checkout does not define a public security contact or repository URL. Do not open a public issue with credentials or exploit details. If the project is published, add a private reporting channel here before release.
+## Known documentation gaps
 
-## Future hardening
+The repository should continue to improve:
 
-Operational alerting, formal incident procedures, secret rotation automation, and a maintained public disclosure channel are not established by the current repository.
+- incident response,
+- formal secret-rotation procedures,
+- production alerting,
+- a maintained private disclosure channel,
+- periodic dependency and configuration review.

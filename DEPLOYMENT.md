@@ -1,31 +1,81 @@
-# Deployment guide
+# Deployment Guide
 
-[Back to the README](README.md) · [Security](SECURITY.md) · [Rollback](docs/ROLLBACK.md)
+[Back to README](README.md) · [Security](SECURITY.md) · [Runbook](docs/DEPLOYMENT-RUNBOOK.md) · [Rollback](docs/ROLLBACK.md)
 
-Deployment is human-controlled. `wrangler.toml` leaves staging and production remote bindings absent until they are provisioned.
+Deployment is **human-controlled**. Documentation and CI do not authorize production changes.
 
 ## Environments
 
-- **Local:** Wrangler dev with local D1 and `.dev.vars`.
-- **Staging:** configuration placeholder; provision bindings and secrets before use.
-- **Production:** provision Cloudflare resources, apply reviewed migrations, configure secrets, generate types, deploy, register the Telegram webhook, and run smoke tests.
+| Environment | Purpose | Current posture |
+| --- | --- | --- |
+| `dev` | Local development | Local D1, no remote resources required |
+| `staging` | Future pre-production environment | Configuration placeholder |
+| `production` | Live Worker | Human-provisioned D1, Workers AI, Vectorize, and secrets |
 
-## Operational entry points
+## Safe deployment sequence
 
-Use [docs/DEPLOYMENT-RUNBOOK.md](docs/DEPLOYMENT-RUNBOOK.md) for provisioning and first release, [docs/SMOKE-TESTS.md](docs/SMOKE-TESTS.md) after deployment, and [docs/ROLLBACK.md](docs/ROLLBACK.md) for rollback or webhook disablement.
+1. Review the intended commit and working tree.
+2. Run `npm run check`.
+3. Verify Cloudflare resources and bindings.
+4. Configure production secrets manually.
+5. Apply reviewed D1 migrations.
+6. Regenerate Worker types if bindings changed.
+7. Run the Wrangler dry-run build.
+8. Deploy only after explicit human approval.
+9. Register or verify the Telegram webhook.
+10. Execute [docs/SMOKE-TESTS.md](docs/SMOKE-TESTS.md).
 
-## Required resources
+## Required production resources
 
-Production semantic memory requires D1, a Vectorize index compatible with the embedding implementation, and Workers AI. The Worker also requires Telegram and credential-encryption secrets. Never put secret values in `wrangler.toml`, migrations, docs, or source.
+Current production architecture expects:
 
-## Safe sequence
+- D1 database,
+- Workers AI binding for semantic embeddings,
+- Vectorize index for semantic memory,
+- Telegram bot credentials,
+- credential encryption master secret.
 
-1. Run local validation and review the diff.
-2. Provision or verify Cloudflare resources and bindings manually.
-3. Configure secrets manually.
-4. Apply migrations in order and verify the target database.
-5. Generate Worker types and run the dry-run build.
-6. Deploy only with explicit human approval.
-7. Register or verify the Telegram webhook and execute smoke tests.
+Memory dependencies may degrade independently of ordinary conversation when unavailable.
 
-This documentation pass performs none of the remote actions above.
+## Secrets
+
+Set secrets through Wrangler:
+
+```bash
+wrangler secret put TELEGRAM_BOT_TOKEN --env production
+wrangler secret put TELEGRAM_WEBHOOK_SECRET --env production
+wrangler secret put CREDENTIAL_MASTER_SECRET --env production
+wrangler secret put OWNER_TELEGRAM_ID --env production
+```
+
+Do not place values in `wrangler.toml`, migrations, source code, issue reports, or chat.
+
+## Migrations
+
+Apply reviewed migrations in order using Wrangler's D1 migration system.
+
+Never modify an applied migration as a shortcut for a deployment problem. Add a corrective migration instead.
+
+## Deployment command
+
+```bash
+wrangler deploy --env production
+```
+
+## Telegram webhook
+
+The deployed endpoint is:
+
+```text
+https://<WORKER_HOSTNAME>/telegram/webhook
+```
+
+Register it through Telegram's Bot API and verify it with `getWebhookInfo`.
+
+See the complete sequence in [docs/DEPLOYMENT-RUNBOOK.md](docs/DEPLOYMENT-RUNBOOK.md).
+
+## Rollback
+
+If the Worker version itself must be reverted, follow [docs/ROLLBACK.md](docs/ROLLBACK.md).
+
+Remember that code rollback does not automatically undo an already-applied D1 schema migration.
